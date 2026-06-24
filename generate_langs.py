@@ -12,3 +12,4 @@ langs = {
 }
 
 print(json.dumps(langs, indent=4, ensure_ascii=False))
+########
