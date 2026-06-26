@@ -4,6 +4,17 @@ import base64
 import json
 import time
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class JWTExpiredError(Exception):
+    """Exception raised when a JWT token has expired."""
+    pass
+
+class JWTInvalidError(Exception):
+    """Exception raised when a JWT token is invalid (bad signature, format, or algorithm)."""
+    pass
 
 JWT_SECRET = os.getenv("JWT_SECRET", "honeybee_digital_secret_key_987654321")
 
@@ -23,7 +34,15 @@ def base64url_decode(data: str) -> bytes:
     padding = '=' * (4 - (len(data) % 4))
     return base64.urlsafe_b64decode(data + padding)
 
-def generate_jwt_token(payload: dict, secret: str = JWT_SECRET, expires_in: int = 86400) -> str:
+def generate_jwt_token(payload: dict, secret: str = None, expires_in: int = None) -> str:
+    if secret is None:
+        secret = os.getenv("JWT_SECRET", "honeybee_digital_secret_key_987654321")
+    if expires_in is None:
+        try:
+            expires_in = int(os.getenv("JWT_EXPIRATION", "86400"))
+        except ValueError:
+            expires_in = 86400
+
     header = {"alg": "HS256", "typ": "JWT"}
     
     # Add expiration time to payload
@@ -42,30 +61,47 @@ def generate_jwt_token(payload: dict, secret: str = JWT_SECRET, expires_in: int 
     
     return f"{header_b64}.{payload_b64}.{signature_b64}"
 
-def decode_jwt_token(token: str, secret: str = JWT_SECRET) -> dict:
+def decode_jwt_token(token: str, secret: str = None) -> dict:
+    if secret is None:
+        secret = os.getenv("JWT_SECRET", "honeybee_digital_secret_key_987654321")
     try:
         parts = token.split('.')
         if len(parts) != 3:
-            return None
+            raise JWTInvalidError("Invalid token format")
             
         header_b64, payload_b64, signature_b64 = parts
         
+        # Verify algorithm in header
+        try:
+            header_json = base64url_decode(header_b64)
+            header = json.loads(header_json.decode('utf-8'))
+        except Exception:
+            raise JWTInvalidError("Invalid token header")
+            
+        if header.get("alg") != "HS256":
+            raise JWTInvalidError("Invalid token signature algorithm")
+            
         # Verify signature
         signing_input = f"{header_b64}.{payload_b64}".encode('utf-8')
         expected_sig = hmac.new(secret.encode('utf-8'), signing_input, hashlib.sha256).digest()
         expected_sig_b64 = base64url_encode(expected_sig)
         
         if not hmac.compare_digest(signature_b64, expected_sig_b64):
-            return None # Signature mismatch
+            raise JWTInvalidError("Signature verification failed")
             
-        payload_json = base64url_decode(payload_b64)
-        payload = json.loads(payload_json.decode('utf-8'))
+        try:
+            payload_json = base64url_decode(payload_b64)
+            payload = json.loads(payload_json.decode('utf-8'))
+        except Exception:
+            raise JWTInvalidError("Invalid token payload")
         
         # Check expiration
         if "exp" in payload and payload["exp"] < int(time.time()):
-            return None # Token expired
+            raise JWTExpiredError("Token has expired")
             
         return payload
+    except (JWTExpiredError, JWTInvalidError):
+        raise
     except Exception as e:
         print(f"Error decoding JWT token: {e}")
-        return None
+        raise JWTInvalidError(str(e))

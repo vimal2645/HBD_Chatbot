@@ -6,6 +6,7 @@ import ChatPage from './pages/ChatPage';
 import AnalyticsPage from './pages/AnalyticsPage';
 import AboutPage from './pages/AboutPage';
 import CategoriesPage from './pages/CategoriesPage';
+import LoginPage from './pages/LoginPage';
 import Toast from './components/ui/Toast';
 import { useTheme } from './hooks/useTheme';
 import { useToast } from './hooks/useToast';
@@ -30,6 +31,9 @@ function AppShell() {
 
   useEffect(() => {
     localStorage.setItem('isLoggedIn', isLoggedIn);
+    if (!isLoggedIn) {
+      localStorage.removeItem('token');
+    }
   }, [isLoggedIn]);
 
   useEffect(() => {
@@ -63,13 +67,14 @@ function AppShell() {
             />
           }
         >
-          <Route index element={<HomePage toast={toast} />} />
-          <Route path="chat" element={<ChatPage {...sharedProps} />} />
-          <Route path="categories" element={<CategoriesPage toast={toast} session={session} />} />
-          <Route path="analytics" element={<AnalyticsPage toast={toast} />} />
-          <Route path="about" element={<AboutPage toast={toast} />} />
-          {/* Redirect unknown paths to home */}
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route index element={isLoggedIn ? <HomePage toast={toast} /> : <Navigate to="/login" replace />} />
+          <Route path="chat" element={isLoggedIn ? <ChatPage {...sharedProps} /> : <Navigate to="/login" replace />} />
+          <Route path="categories" element={isLoggedIn ? <CategoriesPage toast={toast} session={session} /> : <Navigate to="/login" replace />} />
+          <Route path="analytics" element={isLoggedIn ? <AnalyticsPage toast={toast} /> : <Navigate to="/login" replace />} />
+          <Route path="about" element={isLoggedIn ? <AboutPage toast={toast} /> : <Navigate to="/login" replace />} />
+          <Route path="login" element={<LoginPage {...sharedProps} />} />
+          {/* Redirect unknown paths to home if logged in, else login */}
+          <Route path="*" element={<Navigate to={isLoggedIn ? "/" : "/login"} replace />} />
         </Route>
       </Routes>
 

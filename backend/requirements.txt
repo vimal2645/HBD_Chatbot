@@ -9,3 +9,4 @@ fastapi
 uvicorn
 openpyxl
 python-multipart
+bcrypt

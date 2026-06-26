@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Phone, ArrowRight, User, AlertCircle, Loader2, Mail, Key } from 'lucide-react';
+import { api } from '../services/api';
 
 export default function LoginPopup({ onClose, onSuccess }) {
   const [step, setStep] = useState('phone'); // phone | otp
@@ -65,11 +66,7 @@ export default function LoginPopup({ onClose, onSuccess }) {
         }
         setIsLoading(true);
         try {
-          const response = await fetch('/api/send-otp', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: cleanEmail, type: 'login' })
-          }).then(r => r.json());
+          const response = await api.sendEmailOtp(cleanEmail, 'login');
 
           if (response.success) {
             setStep('otp');
@@ -94,11 +91,7 @@ export default function LoginPopup({ onClose, onSuccess }) {
         if (otp === '1234') {
           isVerified = true;
         } else if (method === 'email') {
-          const response = await fetch('/api/verify-otp', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: formData.email, otp })
-          }).then(r => r.json());
+          const response = await api.verifyEmailOtp(formData.email, otp);
           if (response.success) isVerified = true;
           else { setError(response.message || 'Invalid verification code.'); setIsLoading(false); return; }
         }

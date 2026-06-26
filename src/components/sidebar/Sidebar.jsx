@@ -284,73 +284,125 @@ export default function Sidebar({
           </button>
 
           {/* User profile / Login */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: collapsed ? '8px' : '8px 10px',
-            borderRadius: 'var(--radius-md)',
-            background: 'var(--bg-surface-2)',
-            justifyContent: collapsed ? 'center' : 'flex-start',
-            marginTop: 4,
-          }}>
+          {/* User profile / Login */}
+          {isLoggedIn ? (
             <div style={{
-              width: 32,
-              height: 32,
-              borderRadius: '50%',
-              background: isLoggedIn
-                ? 'linear-gradient(135deg, #4f46e5, #7c3aed)'
-                : 'var(--border-default)',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              color: 'white',
-              fontSize: '0.8125rem',
-              fontWeight: 700,
-              flexShrink: 0,
+              gap: 8,
+              padding: collapsed ? '8px' : '8px 10px',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--bg-surface-2)',
+              justifyContent: collapsed ? 'center' : 'flex-start',
+              marginTop: 4,
             }}>
-              {isLoggedIn ? userInitial : <User size={16} />}
-            </div>
-            {!collapsed && (
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{
-                  fontSize: '0.75rem',
-                  fontWeight: 700,
-                  color: 'var(--text-primary)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}>
-                  {isLoggedIn ? userDisplay : 'Guest User'}
-                </p>
-                <p style={{ fontSize: '0.625rem', color: 'var(--text-muted)' }}>
-                  {isLoggedIn ? (session?.type === 'BUSINESS' ? 'Business Owner' : 'Registered') : 'Not logged in'}
-                </p>
+              <div style={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, #4f46e5, #7c3aed)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'white',
+                fontSize: '0.8125rem',
+                fontWeight: 700,
+                flexShrink: 0,
+              }}>
+                {userInitial}
               </div>
-            )}
-            {!collapsed && isLoggedIn && (
-              <button
-                onClick={onLogout}
-                title="Logout"
-                style={{
-                  padding: 4,
-                  borderRadius: 6,
-                  border: 'none',
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  color: 'var(--text-muted)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  flexShrink: 0,
-                }}
-                onMouseEnter={e => { e.currentTarget.style.color = 'var(--color-error)'; }}
-                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
-                aria-label="Logout"
-              >
-                <LogOut size={14} />
-              </button>
-            )}
-          </div>
+              {!collapsed && (
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    color: 'var(--text-primary)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {userDisplay}
+                  </p>
+                  <p style={{ fontSize: '0.625rem', color: 'var(--text-muted)' }}>
+                    {session?.type === 'BUSINESS' ? 'Business Owner' : 'Registered'}
+                  </p>
+                </div>
+              )}
+              {!collapsed && (
+                <button
+                  onClick={onLogout}
+                  title="Logout"
+                  style={{
+                    padding: 4,
+                    borderRadius: 6,
+                    border: 'none',
+                    background: 'transparent',
+                    cursor: 'pointer',
+                    color: 'var(--text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    flexShrink: 0,
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.color = 'var(--color-error)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+                  aria-label="Logout"
+                >
+                  <LogOut size={14} />
+                </button>
+              )}
+            </div>
+          ) : (
+            <Link to="/login" style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: collapsed ? '8px' : '8px 10px',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--bg-surface-2)',
+              justifyContent: collapsed ? 'center' : 'flex-start',
+              marginTop: 4,
+              textDecoration: 'none',
+              cursor: 'pointer',
+              border: '1px solid var(--border-subtle)',
+              transition: 'border-color 0.2s ease',
+            }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--color-primary)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-subtle)'; }}
+            >
+              <div style={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                background: 'var(--border-default)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--text-secondary)',
+                fontSize: '0.8125rem',
+                fontWeight: 700,
+                flexShrink: 0,
+              }}>
+                <User size={16} />
+              </div>
+              {!collapsed && (
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    color: 'var(--text-primary)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    Guest User
+                  </p>
+                  <p style={{ fontSize: '0.625rem', color: 'var(--color-primary)', fontWeight: 700 }}>
+                    Sign In / Register
+                  </p>
+                </div>
+              )}
+            </Link>
+          )}
         </div>
       </nav>
     </>

@@ -82,13 +82,7 @@ export function useChatWizards({
     formData.append('file', file);
 
     try {
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData
-      }).then(r => {
-        if (!r.ok) throw new Error("Upload failed");
-        return r.json();
-      });
+      const res = await api.uploadImage(formData);
 
       removeThinking();
       if (res.success) {

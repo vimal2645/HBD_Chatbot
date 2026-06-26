@@ -1,3 +1,29 @@
+const makeRequest = async (url, options = {}) => {
+  const token = localStorage.getItem('token');
+  const headers = {
+    ...options.headers,
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  
+  const response = await fetch(url, {
+    ...options,
+    headers,
+  });
+  
+  if (response.status === 401) {
+    localStorage.removeItem('token');
+    localStorage.setItem('isLoggedIn', 'false');
+    localStorage.removeItem('session');
+    // Reload page to reset state cleanly
+    window.location.reload();
+    throw new Error('Unauthorized');
+  }
+  
+  return response;
+};
+
 const handleResponse = async (response) => {
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
@@ -7,7 +33,7 @@ const handleResponse = async (response) => {
 };
 
 export const api = {
-  query: (payload) => fetch('/api/query', {
+  query: (payload) => makeRequest('/api/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -15,97 +41,142 @@ export const api = {
 
   login: (phoneOrEmail, method = 'phone') => {
     const body = method === 'phone' ? { phone: phoneOrEmail } : { email: phoneOrEmail };
-    return fetch('/api/login', {
+    return makeRequest('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
-    }).then(handleResponse);
+    }).then(handleResponse).then(res => {
+      if (res.token) {
+        localStorage.setItem('token', res.token);
+      }
+      return res;
+    });
   },
 
-  updateBusiness: (bizId, field, value) => fetch(`/api/business/${bizId}`, {
+  authRegister: (email, phone, password, role) => makeRequest('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, phone, password, role })
+  }).then(handleResponse).then(res => {
+    if (res.token) {
+      localStorage.setItem('token', res.token);
+    }
+    return res;
+  }),
+
+  authLogin: (email, phone, password) => makeRequest('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, phone, password })
+  }).then(handleResponse).then(res => {
+    if (res.token) {
+      localStorage.setItem('token', res.token);
+    }
+    return res;
+  }),
+
+  getMerchantBusinesses: () => makeRequest('/api/merchant/businesses').then(handleResponse),
+
+  updateBusiness: (bizId, field, value) => makeRequest(`/api/business/${bizId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ field, value })
   }).then(handleResponse),
 
-  addBusiness: (data) => fetch('/api/business', {
+  addBusiness: (data) => makeRequest('/api/business', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   }).then(handleResponse),
 
   searchByName: (name) =>
-    fetch(`/api/business/search-name?name=${encodeURIComponent(name)}`).then(handleResponse),
+    makeRequest(`/api/business/search-name?name=${encodeURIComponent(name)}`).then(handleResponse),
 
   searchByAddress: (addr) =>
-    fetch(`/api/business/search-address?address=${encodeURIComponent(addr)}`).then(handleResponse),
+    makeRequest(`/api/business/search-address?address=${encodeURIComponent(addr)}`).then(handleResponse),
 
-  sendEmailOtp: (email, type = 'login') => fetch('/api/send-otp', {
+  sendEmailOtp: (email, type = 'login') => makeRequest('/api/send-otp', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, type })
   }).then(handleResponse),
 
-  verifyEmailOtp: (email, otp) => fetch('/api/verify-otp', {
+  verifyEmailOtp: (email, otp) => makeRequest('/api/verify-otp', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, otp })
-  }).then(handleResponse),
+  }).then(handleResponse).then(res => {
+    if (res.token) {
+      localStorage.setItem('token', res.token);
+    }
+    return res;
+  }),
 
-  getAiSuggestions: (text, lang, flow) => fetch('/api/smart-suggestions', {
+  getAiSuggestions: (text, lang, flow) => makeRequest('/api/smart-suggestions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, language: lang, flow })
   }).then(handleResponse),
 
-  addProduct: (data) => fetch('/api/products', {
+  addProduct: (data) => makeRequest('/api/products', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   }).then(handleResponse),
 
-  addDeal: (data) => fetch('/api/deals', {
+  addDeal: (data) => makeRequest('/api/deals', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   }).then(handleResponse),
 
   deleteProduct: (id) =>
-    fetch(`/api/products/${id}`, { method: 'DELETE' }).then(handleResponse),
+    makeRequest(`/api/products/${id}`, { method: 'DELETE' }).then(handleResponse),
 
   deleteDeal: (id) =>
-    fetch(`/api/deals/${id}`, { method: 'DELETE' }).then(handleResponse),
+    makeRequest(`/api/deals/${id}`, { method: 'DELETE' }).then(handleResponse),
 
   deleteBusiness: (id) =>
-    fetch(`/api/business/${id}`, { method: 'DELETE' }).then(handleResponse),
+    makeRequest(`/api/business/${id}`, { method: 'DELETE' }).then(handleResponse),
+
+  uploadImage: (formData) => makeRequest('/api/upload', {
+    method: 'POST',
+    body: formData
+  }).then(handleResponse),
+
+  syncChats: (guestUserId, userId) => makeRequest('/api/chats/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guest_user_id: guestUserId, user_id: userId })
+  }).then(handleResponse),
 
   // ── CHAT SESSIONS ─────────────────────────────────────────────────────
-  createChatSession: (userId) => fetch('/api/chats', {
+  createChatSession: (userId) => makeRequest('/api/chats', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, title: 'New Chat' })
   }).then(handleResponse),
 
   listChatSessions: (userId) =>
-    fetch(`/api/chats?user_id=${encodeURIComponent(userId)}`).then(handleResponse),
+    makeRequest(`/api/chats?user_id=${encodeURIComponent(userId)}`).then(handleResponse),
 
   getChatHistory: (sessionId, userId) =>
-    fetch(`/api/chats/${sessionId}?user_id=${encodeURIComponent(userId)}`).then(handleResponse),
+    makeRequest(`/api/chats/${sessionId}?user_id=${encodeURIComponent(userId)}`).then(handleResponse),
 
   deleteChatSession: (sessionId, userId) =>
-    fetch(`/api/chats/${sessionId}?user_id=${encodeURIComponent(userId)}`, {
+    makeRequest(`/api/chats/${sessionId}?user_id=${encodeURIComponent(userId)}`, {
       method: 'DELETE'
     }).then(handleResponse),
 
   renameChatSession: (sessionId, title, userId) =>
-    fetch(`/api/chats/${sessionId}?user_id=${encodeURIComponent(userId)}`, {
+    makeRequest(`/api/chats/${sessionId}?user_id=${encodeURIComponent(userId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title })
     }).then(handleResponse),
 
   pinChatSession: (sessionId, isPinned, userId) =>
-    fetch(`/api/chats/${sessionId}/pin?user_id=${encodeURIComponent(userId)}`, {
+    makeRequest(`/api/chats/${sessionId}/pin?user_id=${encodeURIComponent(userId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ is_pinned: isPinned })
@@ -113,18 +184,18 @@ export const api = {
 
   // ── HOME / DISCOVERY ─────────────────────────────────────────────────
   getCategories: (hierarchy = false) =>
-    fetch(`/api/categories?hierarchy=${hierarchy}`).then(handleResponse),
+    makeRequest(`/api/categories?hierarchy=${hierarchy}`).then(handleResponse),
 
   getTrending: () =>
-    fetch('/api/trending').then(handleResponse),
+    makeRequest('/api/trending').then(handleResponse),
 
   // ── ANALYTICS ────────────────────────────────────────────────────────
   getAnalytics: () =>
-    fetch('/api/analytics').then(handleResponse),
+    makeRequest('/api/analytics').then(handleResponse),
 
   // ── HEALTH ────────────────────────────────────────────────────────────
   checkHealth: () =>
-    fetch('/api/health').then(handleResponse),
+    makeRequest('/api/health').then(handleResponse),
 };
 
 export default api;

@@ -59,6 +59,26 @@
         "unanswered"
       ],
       "answer": ""
+    },
+    {
+      "id": "missed_question",
+      "patterns": [
+        "6354093708"
+      ],
+      "tags": [
+        "unanswered"
+      ],
+      "answer": ""
+    },
+    {
+      "id": "missed_question",
+      "patterns": [
+        "show all categories"
+      ],
+      "tags": [
+        "unanswered"
+      ],
+      "answer": ""
     }
   ]
 }

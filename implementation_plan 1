@@ -1,0 +1,117 @@
+# Implementation Plan - Backend & Secure JWT Merchant Authentication (TSK-01)
+
+This plan details the technical steps to secure the HBD Local Business AI project by improving JWT authentication, introducing bcrypt-hashed OTP verification, securing merchant mutation APIs, and updating the frontend to automatically handle token storage, transmission, and expiration handling.
+
+---
+
+## 1. Goal Description
+The objective of this task is to transition the application from an unauthenticated, bypassable state to a secure, token-authenticated state. Key components include:
+*   Hashing OTP codes using `bcrypt` to prevent plaintext storage in memory.
+*   Centralizing and strengthening JWT validation (signature, format, and expiration verification).
+*   Enforcing a FastAPI authorization dependency on all endpoints that modify merchant listings, products, and deals.
+*   Updating the frontend service layer to store JWT tokens on login/OTP verification and automatically attach them to incoming requests using a reusable fetch wrapper.
+
+---
+
+## 2. Additional Implementation Considerations
+
+### Comprehensive API Protection
+*   All merchant-owned resources modifying data must be protected using the centralized authentication dependency, including any existing or future `POST`, `PUT`, `PATCH`, and `DELETE` endpoints, rather than protecting only a predefined list of APIs.
+
+### Algorithmic Enforcement
+*   JWT validation must explicitly enforce the expected signing algorithm (`HS256`) during both token creation and verification to prevent algorithm-related security vulnerabilities (e.g., algorithm switching attacks).
+
+### Automated Session Clean Up (401 Handling)
+*   The frontend will automatically handle `401 Unauthorized` responses by clearing the stored authentication token and resetting/redirecting the user context to the login/landing state, ensuring a smooth experience when tokens expire or become invalid.
+
+### Request/Response Schema Preservation
+*   To preserve backward compatibility, all existing API request and response schemas will remain unchanged so that current frontend functionality continues to work without modification.
+
+### Environment-Specific Dev Bypasses
+*   Development features like the OTP bypass will be controlled via environment variables (specifically `ENABLE_DEV_OTP_BYPASS=true`) to disable them completely in production, rather than using hardcoded logic.
+
+### Environment Config Security
+*   Sensitive configurations (`JWT_SECRET` and token expiration) will be loaded from environment variables. Only the `.env.example` file will be committed to version control to avoid exposing secrets.
+
+### Scope of Testing
+*   The implementation will include comprehensive testing for:
+    *   Malformed tokens, expired tokens, missing authorization headers, and invalid Bearer tokens.
+    *   Listing ownership validation.
+    *   Frontend token persistence after page refresh.
+    *   Automatic authorization header injection.
+    *   Authenticated logout behavior.
+
+### Preservation & Documentation
+*   Maintain the existing user flows while documenting all modified files, added files, authentication flow, login flow, OTP verification flow, business update flow, security improvements, and testing results to ensure the implementation is easy to review and maintain.
+
+---
+
+## 3. Proposed Changes
+
+### Backend Component
+
+#### [MODIFY] [requirements.txt](file:///c:/Users/admin/HBD_Chatbot/backend/requirements.txt)
+*   Add `bcrypt` package to python dependencies.
+
+#### [NEW] [backend/.env.example](file:///c:/Users/admin/HBD_Chatbot/backend/.env.example)
+*   Add `JWT_SECRET`, `JWT_EXPIRATION`, and `ENABLE_DEV_OTP_BYPASS` to document required variables.
+
+#### [NEW] [backend/.env](file:///c:/Users/admin/HBD_Chatbot/backend/.env)
+*   Initialize development environment variables:
+    ```env
+    JWT_SECRET=honeybee_digital_secret_key_987654321
+    JWT_EXPIRATION=86400
+    ENABLE_DEV_OTP_BYPASS=true
+    ```
+
+#### [MODIFY] [auth_utils.py](file:///c:/Users/admin/HBD_Chatbot/backend/auth_utils.py)
+*   Define `JWTExpiredError` and `JWTInvalidError` exceptions.
+*   Enforce algorithm checking: Verify `alg` field in token header is strictly `"HS256"`.
+*   Modify `decode_jwt_token` to:
+    *   Load `JWT_SECRET` and `JWT_EXPIRATION` strictly from environment variables.
+    *   Raise `JWTExpiredError` if the current time exceeds the `exp` claim.
+    *   Raise `JWTInvalidError` if signature verification fails, format is invalid, or if the signature algorithm mismatches `"HS256"`.
+
+#### [MODIFY] [api.py](file:///c:/Users/admin/HBD_Chatbot/backend/api.py)
+*   **OTP Management**:
+    *   Hash OTPs generated in `send_otp_phone`, `send_otp_email`, and `auth_forgot_password` using `bcrypt.hashpw`.
+    *   Compare verification codes in `verify_otp_phone`, `verify_otp_email`, and `auth_verify_otp` using `bcrypt.checkpw()`.
+    *   Allow the `"1234"` bypass strictly if `ENABLE_DEV_OTP_BYPASS` is set to `true` in the environment, checking it via bcrypt.
+*   **Dependency Injection**:
+    *   Define a reusable FastAPI dependency `get_authenticated_user` using `HTTPBearer` that validates incoming headers and returns the decoded payload.
+    *   Raise explicit `401 Unauthorized` responses containing detailed error descriptions (e.g., `"Token has expired"`, `"Invalid token"`, etc.) on verification failure.
+*   **API Security Enforcement**:
+    *   Apply `Depends(get_authenticated_user)` to all mutation endpoints (`POST`, `PUT`, `PATCH`, `DELETE`).
+    *   Enforce ownership match: Reject modifications with `403 Forbidden` if `owner_id` is set in the database and does not match the active `user_id` inside the token payload.
+
+---
+
+### Frontend Component
+
+#### [MODIFY] [api.js](file:///c:/Users/admin/HBD_Chatbot/src/services/api.js)
+*   Create a reusable helper wrapper `makeRequest(url, options)` that:
+    *   Fetches the saved token from `localStorage`.
+    *   Injects the `Authorization: Bearer <token>` header dynamically if the token exists.
+    *   Wraps all fetch requests with this helper.
+    *   Checks if the response returns a `401 Unauthorized` status. If so, removes the token from `localStorage` and triggers a reload/logout to reset frontend state cleanly.
+*   Hook into response chains for `login` and `verifyEmailOtp` to capture and commit `res.token` to `localStorage`.
+
+#### [MODIFY] [App.jsx](file:///c:/Users/admin/HBD_Chatbot/src/App.jsx)
+*   Add a React `useEffect` hook listening to the global `isLoggedIn` state.
+*   Remove the `token` key from `localStorage` whenever `isLoggedIn` transitions to `false` (handling logout gracefully across all components).
+
+---
+
+## 4. Verification Plan
+
+### Automated Tests
+*   Run the project's existing tests to verify registration, credentials login, categories, chatbot flows, and analytics stay operational:
+    `python test_suite.py`
+    `python test_chatbot_flow.py`
+
+### Manual / Integration Verification
+*   **Verify OTP Hashing**: Trigger send-otp and inspect the server console logs to verify that plaintext matches are not stored in memory.
+*   **Verify Mutation Protection**: Attempt a PUT request on `/api/business/{id}` without a token, with an invalid token, and with an expired token, checking that each correctly returns `401 Unauthorized`.
+*   **Verify Ownership Enforcement**: Log in with a different user and attempt to update a business belonging to another owner, verifying that it returns `403 Forbidden`.
+*   **Verify Login Integration**: Check that the React app stores the JWT token on login and attaches the `Authorization: Bearer` header on subsequent requests.
+*   **Verify 401 Session Cleanup**: Manually replace the stored token with an expired/invalid one, call a protected route, and check that the user is logged out immediately and token is cleared.

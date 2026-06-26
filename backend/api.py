@@ -288,14 +288,50 @@ def map_business_fields(biz_list):
             "reviews_count": biz.get("reviews_count", 0),
             "phone_number": biz.get("phone_number"),
             "address": biz.get("address"),
-            "email": biz.get("email")
+            "email": biz.get("email"),
+            "owner_id": biz.get("owner_id")
         })
     return mapped_list
 
 # Rate Limiting & Prompt Injection Guards
 import time
-from fastapi import Request, Header
+from fastapi import Request, Header, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse
+
+reusable_oauth2 = HTTPBearer(auto_error=False)
+
+def get_authenticated_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(reusable_oauth2)) -> dict:
+    if not credentials:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated"
+        )
+    token = credentials.credentials
+    from auth_utils import decode_jwt_token, JWTExpiredError, JWTInvalidError
+    try:
+        payload = decode_jwt_token(token)
+        if not payload:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid token"
+            )
+        return payload
+    except JWTExpiredError as e:
+        raise HTTPException(
+            status_code=401,
+            detail="Token has expired"
+        )
+    except JWTInvalidError as e:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Invalid token: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=401,
+            detail="Could not validate credentials"
+        )
 
 rate_limit_records = {}
 
@@ -438,10 +474,12 @@ def auth_forgot_password(req: dict):
     email = req.get("email")
     phone = req.get("phone")
     import random
+    import bcrypt
     otp = str(random.randint(1000, 9999))
     identifier = email or phone
     if not identifier: raise HTTPException(400, "Identifier is required")
-    otp_storage[identifier] = otp
+    hashed_otp = bcrypt.hashpw(otp.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    otp_storage[identifier] = hashed_otp
     print(f"DEBUG [FORGOT PASSWORD]: Generated OTP {otp} for {identifier}")
     return {"success": True, "message": f"Verification code sent (Dev: {otp})"}
 
@@ -450,16 +488,33 @@ def auth_verify_otp(req: dict):
     identifier = req.get("email") or req.get("phone")
     otp = req.get("otp")
     if not identifier or not otp: raise HTTPException(400, "Missing identifier or OTP")
-    if otp_storage.get(identifier) == str(otp) or str(otp) == "1234":
+    
+    enable_bypass = os.getenv("ENABLE_DEV_OTP_BYPASS", "false").lower() == "true"
+    is_bypass = False
+    if enable_bypass:
+        is_bypass = (str(otp) == "1234")
+        
+    stored_hash = otp_storage.get(identifier)
+    import bcrypt
+    is_valid = False
+    if stored_hash:
+        try:
+            is_valid = bcrypt.checkpw(str(otp).encode('utf-8'), stored_hash.encode('utf-8'))
+        except Exception:
+            pass
+            
+    if is_valid or is_bypass:
         return {"success": True, "message": "Verification complete"}
     raise HTTPException(400, "Invalid OTP code")
 
 @app.post("/api/send-otp-phone")
 def send_otp_phone(req: LoginRequest):
     import random
+    import bcrypt
     otp = str(random.randint(1000, 9999))
     print(f"DEBUG: Sent OTP {otp} to {req.phone}")
-    otp_storage[req.phone] = otp
+    hashed_otp = bcrypt.hashpw(otp.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    otp_storage[req.phone] = hashed_otp
     return {"success": True, "message": "OTP sent"}
 
 @app.post("/api/verify-otp-phone")
@@ -468,7 +523,21 @@ def verify_otp_phone(req: dict):
     otp = req.get("otp")
     if not phone or not otp: raise HTTPException(400, "Missing phone/otp")
     
-    if otp_storage.get(phone) == str(otp) or str(otp) == "1234":
+    enable_bypass = os.getenv("ENABLE_DEV_OTP_BYPASS", "false").lower() == "true"
+    is_bypass = False
+    if enable_bypass:
+        is_bypass = (str(otp) == "1234")
+        
+    stored_hash = otp_storage.get(phone)
+    import bcrypt
+    is_valid = False
+    if stored_hash:
+        try:
+            is_valid = bcrypt.checkpw(str(otp).encode('utf-8'), stored_hash.encode('utf-8'))
+        except Exception:
+            pass
+
+    if is_valid or is_bypass:
         from business_by_phone import get_businesses_by_phone
         from auth_utils import generate_jwt_token
         try:
@@ -537,8 +606,11 @@ def send_otp_email(req: dict):
     type = req.get("type", "login")
     if not email: return {"success": False, "message": "Missing email"}
     
+    import random
+    import bcrypt
     otp = str(random.randint(1000, 9999))
-    otp_storage[email] = otp
+    hashed_otp = bcrypt.hashpw(otp.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    otp_storage[email] = hashed_otp
     print(f"DEBUG: Real OTP {otp} generated for {email} (Type: {type})")
 
     try:
@@ -554,7 +626,21 @@ def verify_otp_email(req: dict):
     otp = req.get("otp")
     if not email or not otp: raise HTTPException(400, "Missing email/otp")
     
-    if otp_storage.get(email) == str(otp) or str(otp) == "1234":
+    enable_bypass = os.getenv("ENABLE_DEV_OTP_BYPASS", "false").lower() == "true"
+    is_bypass = False
+    if enable_bypass:
+        is_bypass = (str(otp) == "1234")
+        
+    stored_hash = otp_storage.get(email)
+    import bcrypt
+    is_valid = False
+    if stored_hash:
+        try:
+            is_valid = bcrypt.checkpw(str(otp).encode('utf-8'), stored_hash.encode('utf-8'))
+        except Exception:
+            pass
+
+    if is_valid or is_bypass:
         from business_by_phone import get_businesses_by_email
         from auth_utils import generate_jwt_token
         try:
@@ -1250,16 +1336,15 @@ def search(req: SearchRequest):
         raise HTTPException(400, str(e))
 
 @app.put("/api/business/{business_id}")
-def update_biz(business_id: int, req: UpdateRequest, authorization: Optional[str] = Header(None)):
-    user_id = get_current_user_id(authorization=authorization)
-    if user_id:
-        conn = sqlite3.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (business_id,))
-        row = cur.fetchone()
-        conn.close()
-        if row and row[0] and row[0] != user_id:
-            raise HTTPException(403, "You do not have permission to modify this business listing.")
+def update_biz(business_id: int, req: UpdateRequest, payload: dict = Depends(get_authenticated_user)):
+    user_id = payload.get("id")
+    conn = sqlite3.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (business_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0] and row[0] != user_id:
+        raise HTTPException(403, "You do not have permission to modify this business listing.")
     try:
         from business_update import update_business
         update_business(business_id, {req.field: req.value})
@@ -1268,37 +1353,8 @@ def update_biz(business_id: int, req: UpdateRequest, authorization: Optional[str
     except Exception as e: raise HTTPException(400, str(e))
 
 @app.post("/api/business")
-def add_biz(req: BusinessAddRequest, authorization: Optional[str] = Header(None)):
-    user_id = get_current_user_id(authorization=authorization)
-    if not user_id:
-        # Legacy fallback: lookup user by phone/email
-        conn = sqlite3.connect(DATABASE_URL)
-        cur = conn.cursor()
-        if req.phone:
-            cur.execute("SELECT id FROM users WHERE phone = ?", (req.phone.strip(),))
-        else:
-            cur.execute("SELECT id FROM users WHERE email = ?", (req.email.strip().lower(),))
-        row = cur.fetchone()
-        conn.close()
-        if row:
-            user_id = row[0]
-            
-    if not user_id:
-        # Create a default user account if missing
-        try:
-            conn = sqlite3.connect(DATABASE_URL)
-            cur = conn.cursor()
-            from auth_utils import hash_password
-            default_hash = hash_password("password123")
-            email_val = (req.email or "").strip().lower()
-            phone_val = req.phone.strip()
-            cur.execute("INSERT INTO users (email, phone, password_hash, role) VALUES (?, ?, ?, 'owner')", (email_val or None, phone_val or None, default_hash))
-            user_id = cur.lastrowid
-            conn.commit()
-            conn.close()
-        except Exception as ue:
-            print(f"Error auto-provisioning user: {ue}")
-            
+def add_biz(req: BusinessAddRequest, payload: dict = Depends(get_authenticated_user)):
+    user_id = payload.get("id")
     try:
         from datetime import datetime
         print(f"DEBUG: add_biz request: {req.dict()}")
@@ -1337,16 +1393,15 @@ def add_biz(req: BusinessAddRequest, authorization: Optional[str] = Header(None)
         raise HTTPException(400, str(e))
 
 @app.delete("/api/business/{business_id}")
-def delete_business_route(business_id: int, authorization: Optional[str] = Header(None)):
-    user_id = get_current_user_id(authorization=authorization)
-    if user_id:
-        conn = sqlite3.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (business_id,))
-        row = cur.fetchone()
-        conn.close()
-        if row and row[0] and row[0] != user_id:
-            raise HTTPException(403, "You do not have permission to delete this business listing.")
+def delete_business_route(business_id: int, payload: dict = Depends(get_authenticated_user)):
+    user_id = payload.get("id")
+    conn = sqlite3.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (business_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0] and row[0] != user_id:
+        raise HTTPException(403, "You do not have permission to delete this business listing.")
     try:
         conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
         cur = conn.cursor()
@@ -1378,20 +1433,39 @@ def delete_business_route(business_id: int, authorization: Optional[str] = Heade
         print(f"Error deleting business: {e}")
         raise HTTPException(400, str(e))
 
+@app.get("/api/merchant/businesses")
+def get_merchant_businesses(payload: dict = Depends(get_authenticated_user)):
+    user_id = payload.get("id")
+    try:
+        conn = sqlite3.connect(DATABASE_URL)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM g_map_master_table WHERE owner_id = ?", (user_id,))
+        rows = cur.fetchall()
+        cols = [c[0] for c in cur.description]
+        conn.close()
+        businesses = [dict(zip(cols, r)) for r in rows]
+        return {
+            "success": True,
+            "businesses": map_business_fields(businesses)
+        }
+    except Exception as e:
+        print(f"Error fetching merchant businesses: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
 # --- PRODUCT & DEAL ENDPOINTS ---
 @app.post("/api/products")
-def add_product(req: AddProductRequest, authorization: Optional[str] = Header(None)):
-    user_id = get_current_user_id(authorization=authorization)
+def add_product(req: AddProductRequest, payload: dict = Depends(get_authenticated_user)):
+    user_id = payload.get("id")
     if not req.business_id:
         raise HTTPException(400, "business_id is required. Please login first.")
-    if user_id:
-        conn = sqlite3.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (req.business_id,))
-        row = cur.fetchone()
-        conn.close()
-        if row and row[0] and row[0] != user_id:
-            raise HTTPException(403, "You do not have permission to manage products for this business listing.")
+    conn = sqlite3.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (req.business_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0] and row[0] != user_id:
+        raise HTTPException(403, "You do not have permission to manage products for this business listing.")
     try:
         from datetime import datetime
         print(f"DEBUG add_product: business_id={req.business_id}, name={req.name}, price={req.price}, category={req.category}")
@@ -1412,18 +1486,17 @@ def add_product(req: AddProductRequest, authorization: Optional[str] = Header(No
         raise HTTPException(400, str(e))
 
 @app.post("/api/deals")
-def add_deal(req: AddDealRequest, authorization: Optional[str] = Header(None)):
-    user_id = get_current_user_id(authorization=authorization)
+def add_deal(req: AddDealRequest, payload: dict = Depends(get_authenticated_user)):
+    user_id = payload.get("id")
     if not req.business_id:
         raise HTTPException(400, "business_id is required.")
-    if user_id:
-        conn = sqlite3.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (req.business_id,))
-        row = cur.fetchone()
-        conn.close()
-        if row and row[0] and row[0] != user_id:
-            raise HTTPException(403, "You do not have permission to manage deals for this business listing.")
+    conn = sqlite3.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (req.business_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0] and row[0] != user_id:
+        raise HTTPException(403, "You do not have permission to manage deals for this business listing.")
     try:
         from datetime import datetime
         conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
@@ -1465,20 +1538,19 @@ def get_deals(biz_id: int):
     except Exception as e: raise HTTPException(400, str(e))
 
 @app.delete("/api/products/{product_id}")
-def delete_product(product_id: int, authorization: Optional[str] = Header(None)):
-    user_id = get_current_user_id(authorization=authorization)
-    if user_id:
-        conn = sqlite3.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT business_id FROM products WHERE id = ?", (product_id,))
-        p_row = cur.fetchone()
-        if p_row:
-            cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (p_row[0],))
-            b_row = cur.fetchone()
-            if b_row and b_row[0] and b_row[0] != user_id:
-                conn.close()
-                raise HTTPException(403, "You do not have permission to modify this product.")
-        conn.close()
+def delete_product(product_id: int, payload: dict = Depends(get_authenticated_user)):
+    user_id = payload.get("id")
+    conn = sqlite3.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("SELECT business_id FROM products WHERE id = ?", (product_id,))
+    p_row = cur.fetchone()
+    if p_row:
+        cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (p_row[0],))
+        b_row = cur.fetchone()
+        if b_row and b_row[0] and b_row[0] != user_id:
+            conn.close()
+            raise HTTPException(403, "You do not have permission to modify this product.")
+    conn.close()
     try:
         conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
         cur = conn.cursor()
@@ -1490,20 +1562,19 @@ def delete_product(product_id: int, authorization: Optional[str] = Header(None))
     except Exception as e: raise HTTPException(400, str(e))
 
 @app.delete("/api/deals/{deal_id}")
-def delete_deal(deal_id: int, authorization: Optional[str] = Header(None)):
-    user_id = get_current_user_id(authorization=authorization)
-    if user_id:
-        conn = sqlite3.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT business_id FROM deals WHERE id = ?", (deal_id,))
-        d_row = cur.fetchone()
-        if d_row:
-            cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (d_row[0],))
-            b_row = cur.fetchone()
-            if b_row and b_row[0] and b_row[0] != user_id:
-                conn.close()
-                raise HTTPException(403, "You do not have permission to modify this deal.")
-        conn.close()
+def delete_deal(deal_id: int, payload: dict = Depends(get_authenticated_user)):
+    user_id = payload.get("id")
+    conn = sqlite3.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("SELECT business_id FROM deals WHERE id = ?", (deal_id,))
+    d_row = cur.fetchone()
+    if d_row:
+        cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (d_row[0],))
+        b_row = cur.fetchone()
+        if b_row and b_row[0] and b_row[0] != user_id:
+            conn.close()
+            raise HTTPException(403, "You do not have permission to modify this deal.")
+    conn.close()
     try:
         conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
         cur = conn.cursor()
