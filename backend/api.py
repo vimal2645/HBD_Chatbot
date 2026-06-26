@@ -2265,3 +2265,103 @@ def compare_businesses(req: CompareRequest):
         return map_business_fields(rows)
     except Exception as e:
         raise HTTPException(400, str(e))
+
+# ── REVIEWS & RATINGS ENDPOINTS ───────────────────────────────────────
+
+class ReviewAddRequest(BaseModel):
+    business_id: int
+    user_id: str
+    rating: int
+    comment: str = ""
+
+@app.get("/api/reviews/{business_id}")
+def get_reviews(business_id: int):
+    try:
+        with db_context() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT * FROM reviews 
+                WHERE business_id = ? 
+                ORDER BY created_at DESC
+            """, (business_id,))
+            rows = [dict(r) for r in cur.fetchall()]
+        return rows
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/reviews")
+def add_review(req: ReviewAddRequest):
+    try:
+        if req.rating < 1 or req.rating > 5:
+            raise HTTPException(400, "Rating must be between 1 and 5")
+            
+        with db_context() as conn:
+            cur = conn.cursor()
+            # Insert the review
+            cur.execute("""
+                INSERT INTO reviews (business_id, user_id, rating, comment)
+                VALUES (?, ?, ?, ?)
+            """, (req.business_id, req.user_id, req.rating, req.comment))
+            
+            # Recalculate average rating and total count
+            cur.execute("""
+                SELECT COUNT(*), AVG(rating) FROM reviews WHERE business_id = ?
+            """, (req.business_id,))
+            row = cur.fetchone()
+            count = row[0] or 0
+            avg_rating = round(row[1] or 0.0, 1)
+            
+            # Update g_map_master_table
+            cur.execute("""
+                UPDATE g_map_master_table 
+                SET reviews_count = ?, ratings = ?
+                WHERE global_business_id = ?
+            """, (count, avg_rating, req.business_id))
+            
+            conn.commit()
+            
+        return {"success": True, "message": "Review added", "reviews_count": count, "ratings": avg_rating}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+@app.delete("/api/reviews/{review_id}")
+def delete_review(review_id: int, user_id: str):
+    try:
+        with db_context() as conn:
+            cur = conn.cursor()
+            
+            # Verify ownership and get business_id
+            cur.execute("SELECT business_id, user_id FROM reviews WHERE id = ?", (review_id,))
+            review = cur.fetchone()
+            
+            if not review:
+                raise HTTPException(404, "Review not found")
+                
+            if review["user_id"] != user_id:
+                raise HTTPException(403, "Not authorized to delete this review")
+                
+            biz_id = review["business_id"]
+            
+            # Delete review
+            cur.execute("DELETE FROM reviews WHERE id = ?", (review_id,))
+            
+            # Recalculate average
+            cur.execute("""
+                SELECT COUNT(*), AVG(rating) FROM reviews WHERE business_id = ?
+            """, (biz_id,))
+            row = cur.fetchone()
+            count = row[0] or 0
+            avg_rating = round(row[1] or 0.0, 1)
+            
+            # Update g_map_master_table
+            cur.execute("""
+                UPDATE g_map_master_table 
+                SET reviews_count = ?, ratings = ?
+                WHERE global_business_id = ?
+            """, (count, avg_rating, biz_id))
+            
+            conn.commit()
+            
+        return {"success": True, "message": "Review deleted", "reviews_count": count, "ratings": avg_rating}
+    except Exception as e:
+        raise HTTPException(400, str(e))

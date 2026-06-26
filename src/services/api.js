@@ -147,6 +147,19 @@ export const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ business_ids: businessIds })
   }).then(handleResponse),
+
+  // ── REVIEWS & RATINGS ──────────────────────────────────────────────────
+  getReviews: (businessId) => fetch(`/api/reviews/${businessId}`).then(handleResponse),
+
+  addReview: (reviewData) => fetch('/api/reviews', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reviewData)
+  }).then(handleResponse),
+
+  deleteReview: (reviewId, userId) => fetch(`/api/reviews/${reviewId}?user_id=${encodeURIComponent(userId)}`, {
+    method: 'DELETE'
+  }).then(handleResponse),
 };
 
 export default api;
