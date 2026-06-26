@@ -196,6 +196,43 @@ export const api = {
   // ── HEALTH ────────────────────────────────────────────────────────────
   checkHealth: () =>
     makeRequest('/api/health').then(handleResponse),
+
+  // ── BOOKMARKS ─────────────────────────────────────────────────────────
+  addBookmark: (userId, businessId) => makeRequest('/api/bookmarks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, business_id: businessId })
+  }).then(handleResponse),
+
+  getBookmarks: (userId) => makeRequest(`/api/bookmarks?user_id=${encodeURIComponent(userId)}`).then(handleResponse),
+
+  deleteBookmark: (businessId, userId) => makeRequest(`/api/bookmarks/${businessId}?user_id=${encodeURIComponent(userId)}`, {
+    method: 'DELETE'
+  }).then(handleResponse),
+
+  // ── COMPARE ───────────────────────────────────────────────────────────
+  compareBusinesses: (businessIds) => makeRequest('/api/business/compare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ business_ids: businessIds })
+  }).then(handleResponse),
+
+  // ── REVIEWS & RATINGS ──────────────────────────────────────────────────
+  getReviews: (businessId) => makeRequest(`/api/reviews/${businessId}`).then(handleResponse),
+
+  addReview: (reviewData) => makeRequest('/api/reviews', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reviewData)
+  }).then(handleResponse),
+
+  deleteReview: (reviewId, userId) => makeRequest(`/api/reviews/${reviewId}?user_id=${encodeURIComponent(userId)}`, {
+    method: 'DELETE'
+  }).then(handleResponse),
+
+  // ── PRODUCTS & DEALS (ADS) ─────────────────────────────────────────────
+  getProducts: (businessId) => makeRequest(`/api/business/${businessId}/products`).then(handleResponse),
+  getDeals: (businessId) => makeRequest(`/api/business/${businessId}/deals`).then(handleResponse),
 };
 
 export default api;

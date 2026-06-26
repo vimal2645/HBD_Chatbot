@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   MessageSquare, Home, Settings, Plus, ChevronLeft, ChevronRight,
-  Sun, Moon, LogOut, User, Search, X, BarChart2, Info, Grid
+  Sun, Moon, LogOut, User, Search, X, BarChart2, Info, Grid, PlusCircle,
+  Briefcase
 } from 'lucide-react';
 
 import ChatHistoryList from './ChatHistoryList';
@@ -179,6 +180,11 @@ export default function Sidebar({
         <div style={{ padding: '0 10px 8px', flexShrink: 0 }}>
           <NavItem to="/" icon={<Home size={16} />} label="Home" collapsed={collapsed} />
           <NavItem to="/chat" icon={<img src="/avatar.png" alt="Chat Assistant" style={{ width: 16, height: 16, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border-subtle)' }} />} label="Chat" collapsed={collapsed} />
+          {isLoggedIn && session?.type === 'BUSINESS' && session?.businessId ? (
+            <NavItem to="/chat?q=show my business" icon={<Briefcase size={16} />} label={session.businessName || "My Business"} collapsed={collapsed} />
+          ) : (
+            <NavItem to="/chat?action=add_new_business" icon={<PlusCircle size={16} />} label="Add Business" collapsed={collapsed} />
+          )}
           <NavItem to="/categories" icon={<Grid size={16} />} label="Categories" collapsed={collapsed} />
           <NavItem to="/analytics" icon={<BarChart2 size={16} />} label="Analytics" collapsed={collapsed} />
           <NavItem to="/about" icon={<Info size={16} />} label="About" collapsed={collapsed} />
@@ -411,7 +417,8 @@ export default function Sidebar({
 
 function NavItem({ to, icon, label, collapsed }) {
   const location = useLocation();
-  const isActive = location.pathname === to || (to === '/chat' && location.pathname.startsWith('/chat'));
+  const cleanToPath = to.split('?')[0];
+  const isActive = location.pathname === cleanToPath || (cleanToPath === '/chat' && location.pathname.startsWith('/chat') && (to.includes('action') ? location.search.includes('action') : !location.search.includes('action')));
 
   return (
     <Link

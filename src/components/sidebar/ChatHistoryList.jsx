@@ -8,13 +8,15 @@ function groupByDate(sessions) {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yesterday = new Date(today - 86400000);
   const lastWeek = new Date(today - 7 * 86400000);
+  const lastMonth = new Date(today - 30 * 86400000);
 
-  const groups = { Today: [], Yesterday: [], 'Last 7 Days': [], Older: [] };
+  const groups = { Today: [], Yesterday: [], 'Last 7 Days': [], 'Last Month': [], Older: [] };
   sessions.forEach(s => {
     const d = new Date(s.updated_at || s.created_at);
     if (d >= today) groups.Today.push(s);
     else if (d >= yesterday) groups.Yesterday.push(s);
     else if (d >= lastWeek) groups['Last 7 Days'].push(s);
+    else if (d >= lastMonth) groups['Last Month'].push(s);
     else groups.Older.push(s);
   });
   return groups;

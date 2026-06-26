@@ -1,4 +1,4 @@
-import { Search, RefreshCw, X, LogIn, MapPin, Type, PlusCircle, Phone } from 'lucide-react'
+import { Search, RefreshCw, X, LogIn, MapPin, Type, PlusCircle, Phone, Package, Tag } from 'lucide-react'
 import { UI_TRANSLATIONS } from '../constants/Translations'
 
 export default function QuickActions({ onAction, view = 'main', lang = 'en' }) {
@@ -70,11 +70,11 @@ export default function QuickActions({ onAction, view = 'main', lang = 'en' }) {
     )
   }
 
-  // VIEW 4: MAIN (When Logged In - The "Previous Design")
+  // VIEW 4: MAIN (When Logged In)
   if (view === 'main') {
     return (
       <div className="px-3 pt-2 pb-2 flex flex-col gap-2 animate-in slide-in-from-bottom-2">
-        <div className="flex gap-4 justify-center">
+        <div className="flex gap-2 justify-center">
           <button onClick={() => onAction('search')} className="flex-1 flex items-center justify-center gap-2 bg-blue-50 text-blue-600 border border-blue-100 py-1.5 rounded-lg text-[11px] font-bold hover:bg-blue-100 transition-colors" >
             <Search size={12} /> {trans.btn_show_biz}
           </button>
@@ -82,6 +82,25 @@ export default function QuickActions({ onAction, view = 'main', lang = 'en' }) {
             <RefreshCw size={12} /> {trans.btn_update_biz}
           </button>
         </div>
+
+        <div className="flex gap-2 justify-center">
+          <button onClick={() => onAction('manage_products')} className="flex-1 flex items-center justify-center gap-2 bg-indigo-50 text-indigo-600 border border-indigo-100 py-1.5 rounded-lg text-[11px] font-bold hover:bg-indigo-100 transition-colors">
+            <Package size={12} /> {trans.btn_manage_products || 'Manage Products'}
+          </button>
+          <button onClick={() => onAction('manage_deals')} className="flex-1 flex items-center justify-center gap-2 bg-pink-50 text-pink-600 border border-pink-100 py-1.5 rounded-lg text-[11px] font-bold hover:bg-pink-100 transition-colors">
+            <Tag size={12} /> {trans.btn_manage_deals || 'Manage Deals'}
+          </button>
+        </div>
+
+        <div className="flex gap-2 justify-center">
+          <button onClick={() => onAction('start_add_product')} className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 text-white py-1.5 rounded-lg text-[11px] font-bold hover:bg-indigo-700 transition-colors">
+            <PlusCircle size={12} /> {trans.btn_add_product || 'Add Product'}
+          </button>
+          <button onClick={() => onAction('start_add_deal')} className="flex-1 flex items-center justify-center gap-2 bg-pink-600 text-white py-1.5 rounded-lg text-[11px] font-bold hover:bg-pink-700 transition-colors">
+            <PlusCircle size={12} /> {trans.btn_add_deal || 'Add Deal'}
+          </button>
+        </div>
+
         <div className="flex gap-2">
           <button onClick={() => onAction('go_back')} className="flex-1 text-[11px] text-gray-400 text-center py-1 hover:text-[#4F46E5] transition-colors font-medium">{`← ${trans.btn_back_menu}`}</button>
           <button onClick={() => onAction('reset_chat')} className="flex-1 flex items-center justify-center gap-1 text-red-400 hover:text-red-500 transition-colors text-[10px] font-bold">

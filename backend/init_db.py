@@ -35,9 +35,16 @@ CREATE TABLE IF NOT EXISTS g_map_master_table (
     state TEXT,
     area TEXT,
     created_at TEXT,
-    email TEXT
+    email TEXT,
+    owner_id INTEGER
 )
 ''')
+
+# Create indexes for sub-second query performance
+cur.execute('CREATE INDEX IF NOT EXISTS idx_gmap_category ON g_map_master_table (business_category)')
+cur.execute('CREATE INDEX IF NOT EXISTS idx_gmap_city_category ON g_map_master_table (city, business_category)')
+cur.execute('CREATE INDEX IF NOT EXISTS idx_gmap_area ON g_map_master_table (area)')
+cur.execute('CREATE INDEX IF NOT EXISTS idx_gmap_ratings ON g_map_master_table (ratings)')
 
 # Create products table
 cur.execute('''
@@ -73,7 +80,8 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     user_id TEXT,
     title TEXT DEFAULT 'New Chat',
     created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    updated_at TEXT DEFAULT (datetime('now')),
+    is_pinned INTEGER DEFAULT 0
 )
 ''')
 

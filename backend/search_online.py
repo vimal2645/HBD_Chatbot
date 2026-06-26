@@ -237,12 +237,14 @@ def save_results_to_sqlite(results):
                     business_id,
                     record
                 )
+                record["global_business_id"] = business_id
                 updated += 1
             else:
                 insert_new_business(
                     cursor,
                     record
                 )
+                record["global_business_id"] = cursor.lastrowid
                 inserted += 1
 
         conn.commit()
@@ -312,14 +314,14 @@ def search_online_and_save(query: str) -> List[Dict]:
     if not query or not query.strip():
         raise ValueError("Search query cannot be empty")
 
-    print(f"🌐 [SCRAPER] Initiating real-time web scraping fallback for: '{query}'")
+    print(f"[SCRAPER] Initiating real-time web scraping fallback for: '{query}'")
     scraped_data = scrape_ddg_results(query)
     
     if not scraped_data:
-        print("⚠️ [SCRAPER] Web scraping returned 0 results. Falling back to LLM knowledge synthesis.")
+        print("[SCRAPER] Web scraping returned 0 results. Falling back to LLM knowledge synthesis.")
         scraped_context = "No search results found."
     else:
-        print(f"✅ [SCRAPER] Scraped {len(scraped_data)} web results. Structuring data...")
+        print(f"[SCRAPER] Scraped {len(scraped_data)} web results. Structuring data...")
         formatted_results = []
         for idx, r in enumerate(scraped_data, 1):
             formatted_results.append(
@@ -339,8 +341,13 @@ Below are the scraped search engine results:
 
 Task:
 Extract and compile a list of up to 10 local businesses that match the query "{query}" from the search results.
-If the scraped search results do not contain enough details (such as address, phone number, category, website, etc.), you must enrich them using your general knowledge, but prioritize the real details from the search results.
-Ensure that the businesses are REAL and located in the requested city/area if specified.
+
+CRITICAL RULES FOR LOCAL BUSINESS EXTRACTION:
+1. DO NOT extract directory websites, listing platforms, or food delivery portals (such as TripAdvisor, Zomato, Swiggy, Justdial, Yelp, Restaurant Guru, Foursquare, etc.) as business entities.
+2. Instead, look at the snippets of these directory results to identify the names of ACTUAL physical businesses (e.g., individual restaurants, shops, hotels, offices) mentioned within them.
+3. Extract and return these actual local businesses. If the search results do not list specific local businesses, you must synthesize realistic, actual physical businesses that match the query and location (e.g. individual real or realistic restaurants in Maninagar, Ahmedabad) using your general knowledge of the area.
+4. Ensure the businesses are actual physical establishments located in the requested city and specific area/neighborhood (e.g., Maninagar, Ahmedabad) if specified.
+5. Prioritize real details from the search results where available, but enrich missing fields (such as address, phone number, website) using your knowledge to ensure a complete profile.
 
 For each business, return ONLY these fields in a strict JSON array of objects:
 - name: The name of the business (e.g. "Elite Fitness Gym").
@@ -362,23 +369,24 @@ Rules:
 
     message = call_llm(
         messages=[{"role": "user", "content": prompt}],
-        model="google/gemini-2.5-flash"
+        model="google/gemini-2.5-flash",
+        max_tokens=3000
     )
 
     content = message.get("content", "").strip()
     
-    # Sanitize content: remove markdown code block markers if present
-    if content.startswith("```"):
-        lines = content.splitlines()
-        if len(lines) > 2:
-            content = "\n".join(lines[1:-1]).strip()
-        else:
-            content = content.replace("```json", "").replace("```", "").strip()
-
+    # Robustly extract JSON array from the LLM output
+    json_str = content
+    start_idx = content.find('[')
+    end_idx = content.rfind(']')
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        json_str = content[start_idx:end_idx+1]
+    
     try:
-        raw_results = json.loads(content)
-    except json.JSONDecodeError:
-        print(f"DEBUG: Failed to parse JSON. Content was: {content[:100]}...")
+        raw_results = json.loads(json_str)
+    except json.JSONDecodeError as jde:
+        print(f"DEBUG: Failed to parse JSON. Content was: {content[:500]}...")
+        print(f"DEBUG: JSON error: {jde}")
         raise RuntimeError("LLM returned invalid JSON")
 
     if not isinstance(raw_results, list) or not raw_results:

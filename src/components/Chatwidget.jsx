@@ -42,6 +42,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
     addThinking,
     removeThinking,
     setSession,
+    setIsLoggedIn,
     setQuickActionsView
   });
 
@@ -206,6 +207,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
         const sessionData = { 
           type: 'BUSINESS', 
           businessId: biz.global_business_id,
+          businessName: biz.business_name,
           city: biz.city
         }
         if (method === 'phone') sessionData.phone = identifier;
@@ -818,41 +820,8 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
       </div>
 
       {/* PREMIUM ACTIONS TRAY / CURRENCY SHORTCUTS */}
-      {isLoggedIn && session.businessId && (flowMode === 'QUERY' || (flowMode === 'ADD_PRODUCT' && wizardStep === 1)) && (
+      {isLoggedIn && session.businessId && (flowMode === 'ADD_PRODUCT' && wizardStep === 1) && (
         <div className="flex gap-2 px-3 py-2 bg-gray-50/50 border-t border-gray-100 overflow-x-auto no-scrollbar animate-in slide-in-from-bottom-2 duration-300">
-          {flowMode === 'QUERY' && (
-            <>
-              <button 
-                onClick={() => handleAction('start_add_product')}
-                className="flex items-center gap-2 px-3 py-1.5 bg-white border border-orange-100 text-orange-600 rounded-lg text-[11px] font-bold hover:bg-orange-50 transition-all whitespace-nowrap shadow-sm active:scale-95"
-              >
-                <Plus size={12} className="text-orange-500" />
-                {currentLanguage === 'hi' ? 'उत्पाद जोड़ें' : 'Add Product'}
-              </button>
-              <button 
-                onClick={() => handleAction('start_add_deal')}
-                className="flex items-center gap-2 px-3 py-1.5 bg-white border border-pink-100 text-pink-600 rounded-lg text-[11px] font-bold hover:bg-pink-50 transition-all whitespace-nowrap shadow-sm active:scale-95"
-              >
-                <Plus size={12} className="text-pink-500" />
-                {currentLanguage === 'hi' ? 'सौदा जोड़ें' : 'Add Deal'}
-              </button>
-              <button 
-                onClick={() => handleAction('manage_products')}
-                className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-200 text-gray-600 rounded-lg text-[11px] font-bold hover:bg-gray-50 transition-all whitespace-nowrap shadow-sm active:scale-95"
-              >
-                <Settings size={12} className="text-gray-400" />
-                {currentLanguage === 'hi' ? 'उत्पाद प्रबंधित करें' : 'Manage Products'}
-              </button>
-              <button 
-                onClick={() => handleAction('manage_deals')}
-                className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-200 text-gray-600 rounded-lg text-[11px] font-bold hover:bg-gray-50 transition-all whitespace-nowrap shadow-sm active:scale-95"
-              >
-                <Settings size={12} className="text-gray-400" />
-                {currentLanguage === 'hi' ? 'सौदे प्रबंधित करें' : 'Manage Deals'}
-              </button>
-            </>
-          )}
-
           {flowMode === 'ADD_PRODUCT' && wizardStep === 1 && (
             <div className="flex gap-2 items-center">
               <span className="text-[10px] font-bold text-gray-400 mr-1 uppercase">Price Helpers:</span>

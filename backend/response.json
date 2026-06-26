@@ -1,0 +1,202 @@
+{
+  "type": "database",
+  "data": [
+    {
+      "global_business_id": 691,
+      "business_name": "Pune Fitness Forum - Ganeshkhind",
+      "business_category": "Gym",
+      "business_subcategory": "",
+      "website_url": "http://www.punefitnessforum.in",
+      "area": "Ganeshkhind",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "ratings": 4.6,
+      "reviews_count": 150,
+      "phone_number": "+919012345678",
+      "address": "Opp. Ganeshkhind Road, University Circle, Pune, Maharashtra 411007",
+      "email": null
+    },
+    {
+      "global_business_id": 694,
+      "business_name": "Apex Gym Gokhale Nagar",
+      "business_category": "Gym",
+      "business_subcategory": "",
+      "website_url": "http://www.apexgympune.co.in",
+      "area": "Gokhale Nagar",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "ratings": 4.5,
+      "reviews_count": 130,
+      "phone_number": "+917890123456",
+      "address": "1st Floor, Reliance Mall, Gokhale Nagar, Pune, Maharashtra 411016",
+      "email": null
+    },
+    {
+      "global_business_id": 688,
+      "business_name": "Gains Gym",
+      "business_category": "Gym",
+      "business_subcategory": "",
+      "website_url": "http://www.gainsgympune.in",
+      "area": "Gokhale Nagar",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "ratings": 4.5,
+      "reviews_count": 120,
+      "phone_number": "+919988776655",
+      "address": "B-Wing, Ground Floor, Sai Complex, Gokhale Nagar, Pune, Maharashtra 411016",
+      "email": null
+    },
+    {
+      "global_business_id": 521,
+      "business_name": "Gold's Gym",
+      "business_category": "gym",
+      "business_subcategory": "",
+      "website_url": "goldsgym.com",
+      "area": "Koregaon Park",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "ratings": 4.5,
+      "reviews_count": 95,
+      "phone_number": "0202345678",
+      "address": "Koregaon Park",
+      "email": null
+    },
+    {
+      "global_business_id": 693,
+      "business_name": "Gold's Fit Ghorpadi",
+      "business_category": "Gym",
+      "business_subcategory": "",
+      "website_url": "http://www.goldsfitpune.com",
+      "area": "Ghorpadi",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "ratings": 4.4,
+      "reviews_count": 110,
+      "phone_number": "+918901234567",
+      "address": "Next to ABC Chowk, Ghorpadi Road, Pune, Maharashtra 411001",
+      "email": null
+    },
+    {
+      "global_business_id": 690,
+      "business_name": "Iron Body Gym Ghorpadi",
+      "business_category": "Gym",
+      "business_subcategory": "",
+      "website_url": "http://www.ironbodygym.co.in",
+      "area": "Ghorpadi",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "ratings": 4.3,
+      "reviews_count": 95,
+      "phone_number": "+917654321098",
+      "address": "Near Ghorpadi Gaon Bus Stop, Ghorpadi, Pune, Maharashtra 411001",
+      "email": null
+    },
+    {
+      "global_business_id": 520,
+      "business_name": "Talwalkars Gym",
+      "business_category": "gym",
+      "business_subcategory": "",
+      "website_url": "talwalkars.com",
+      "area": "Shivajinagar",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "ratings": 4.2,
+      "reviews_count": 120,
+      "phone_number": "0201234567",
+      "address": "Fergusson College Road",
+      "email": null
+    },
+    {
+      "global_business_id": 696,
+      "business_name": "Active Living Gym G",
+      "business_category": "Gym",
+      "business_subcategory": "",
+      "website_url": "http://www.activelivinggym.com",
+      "area": "Ghorpadi Peth",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "ratings": 4.2,
+      "reviews_count": 90,
+      "phone_number": "+919786543210",
+      "address": "Ground Floor, Silver Square, Ghorpadi Peth, Pune, Maharashtra 411040",
+      "email": null
+    },
+    {
+      "global_business_id": 687,
+      "business_name": "Physique Fitness",
+      "business_category": "Gym",
+      "business_subcategory": "",
+      "website_url": "http://www.physiquefitnesspune.com",
+      "area": "Ghorpadi",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "ratings": 4.2,
+      "reviews_count": 85,
+      "phone_number": "+919876543210",
+      "address": "Shop No. 5, Ganga Plaza, Ghorpadi, Pune, Maharashtra 411001",
+      "email": null
+    },
+    {
+      "global_business_id": 692,
+      "business_name": "The Gym Galore",
+      "business_category": "Gym",
+      "business_subcategory": "",
+      "website_url": "http://www.thegymgalore.com",
+      "area": "Gunjal Nagar",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "ratings": 4.1,
+      "reviews_count": 75,
+      "phone_number": "+919234567890",
+      "address": "Shop No. 10, Ganga Satellite, Gunjal Nagar, Pune, Maharashtra 411030",
+      "email": null
+    }
+  ],
+  "intro": "Here are the gyms in Pune in g (showing 1-10 of 12):",
+  "prompt": "Use the options below to paginate or filter listings:",
+  "suggestions": [
+    {
+      "title": "Next 5 Results \u23ed\ufe0f",
+      "action": "next_option",
+      "query": "Show Next 5 Results"
+    },
+    {
+      "title": "Next 10 Results \u23ed\ufe0f",
+      "action": "next_option",
+      "query": "Show Next 10 Results"
+    },
+    {
+      "title": "Area: Ghorpadi \ud83d\udccd",
+      "action": "filter_area",
+      "query": "Filter by Area: Ghorpadi"
+    },
+    {
+      "title": "Area: Ganesh Peth \ud83d\udccd",
+      "action": "filter_area",
+      "query": "Filter by Area: Ganesh Peth"
+    },
+    {
+      "title": "Area: Gokhale Nagar \ud83d\udccd",
+      "action": "filter_area",
+      "query": "Filter by Area: Gokhale Nagar"
+    },
+    {
+      "title": "Filter 4.5+ \u2b50",
+      "action": "filter_rating",
+      "query": "Filter by Rating: 4.5+"
+    },
+    {
+      "title": "Search Another City \ud83d\udd0d",
+      "action": "search_another_city",
+      "query": "Search Another Location"
+    }
+  ],
+  "search_metadata": {
+    "category": "gym",
+    "city": "pune",
+    "offset": 0,
+    "limit": 10,
+    "area": "g",
+    "min_rating": null
+  }
+}

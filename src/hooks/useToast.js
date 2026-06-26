@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
 
 let toastIdCounter = 0;
 
@@ -27,12 +27,12 @@ export function useToast() {
     return id;
   }, [dismiss]);
 
-  const toast = {
+  const toast = useMemo(() => ({
     success: (msg, dur) => addToast('success', msg, dur),
     error:   (msg, dur) => addToast('error', msg, dur),
     warning: (msg, dur) => addToast('warning', msg, dur),
     info:    (msg, dur) => addToast('info', msg, dur),
-  };
+  }), [addToast]);
 
   return { toasts, toast, dismiss };
 }

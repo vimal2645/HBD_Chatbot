@@ -35,6 +35,7 @@ export function useChatWizards({
   addThinking,
   removeThinking,
   setSession,
+  setIsLoggedIn,
   setQuickActionsView,
   flowMode,
   setFlowMode,
@@ -108,6 +109,16 @@ export function useChatWizards({
 
   const handleWizardSend = async (text, trans) => {
     const lang = currentLanguage || 'en';
+    const cleanText = text.trim().toLowerCase();
+    if (cleanText === 'cancel' || cleanText === 'exit' || cleanText === 'quit' || cleanText === 'reset') {
+      setFlowMode('QUERY');
+      setWizardStep(0);
+      setWizardData({});
+      setPendingUpdateField(null);
+      removeThinking();
+      setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: trans.wizard_canceled || "Wizard canceled. You can now search for businesses again." }]);
+      return true;
+    }
 
     if (flowMode === 'UPDATE_VALUE') {
       if (pendingUpdateField === 'phone_number') {
@@ -249,7 +260,15 @@ export function useChatWizards({
           removeThinking();
           setFlowMode('QUERY');
           if (res.success) {
-            setSession({ type: 'BUSINESS', phone: finalData.phone, businessId: res.id });
+            setSession({
+              type: 'BUSINESS',
+              phone: finalData.phone || session.phone,
+              email: finalData.email || session.email,
+              businessId: res.id,
+              businessName: finalData.name,
+              city: finalData.city
+            });
+            setIsLoggedIn?.(true);
             setQuickActionsView('main');
             setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: trans.business_added }]);
           } else {
