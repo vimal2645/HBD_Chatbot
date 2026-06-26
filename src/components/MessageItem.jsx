@@ -5,6 +5,7 @@ import {
   Star, Phone, Globe, Copy, Check, ExternalLink, Share2, Bookmark, Clock, Compass
 } from 'lucide-react';
 import api from '../services/api';
+import ReviewSection from './ReviewSection';
 
 // Safe inline markdown renderer (no dangerouslySetInnerHTML)
 function MarkdownText({ text }) {
@@ -250,6 +251,10 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
   const firstLetter = String(biz.business_name || 'B').trim().charAt(0).toUpperCase();
   const { hours, status } = getOpeningHours(biz.business_category);
 
+  const [showReviews, setShowReviews] = useState(false);
+  const [localRatings, setLocalRatings] = useState(biz.ratings);
+  const [localReviewsCount, setLocalReviewsCount] = useState(biz.reviews_count);
+
   const isComparing = compareList && biz.global_business_id && compareList.some(c => c.global_business_id && Number(c.global_business_id) === Number(biz.global_business_id));
 
   const handleCompareToggle = (e) => {
@@ -444,10 +449,10 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
         </h4>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-          <StarRating rating={biz.ratings} />
-          {biz.reviews_count > 0 && (
+          <StarRating rating={localRatings} />
+          {localReviewsCount > 0 && (
             <span style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
-              ({biz.reviews_count} review{biz.reviews_count !== 1 ? 's' : ''})
+              ({localReviewsCount} review{localReviewsCount !== 1 ? 's' : ''})
             </span>
           )}
         </div>
@@ -532,6 +537,51 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
             <Share2 size={13} />
           </button>
         </div>
+        
+        {/* Reviews Toggle Button */}
+        <button
+          onClick={(e) => { e.stopPropagation(); setShowReviews(!showReviews); }}
+          style={{
+            marginTop: 10,
+            width: '100%',
+            padding: '8px 10px',
+            background: showReviews ? 'var(--color-primary)' : 'var(--bg-surface-2)',
+            color: showReviews ? '#fff' : 'var(--text-secondary)',
+            border: `1px solid ${showReviews ? 'var(--color-primary)' : 'var(--border-subtle)'}`,
+            borderRadius: 8,
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+            transition: 'all 150ms ease'
+          }}
+          onMouseEnter={e => {
+            if (!showReviews) e.currentTarget.style.background = 'var(--bg-surface)';
+          }}
+          onMouseLeave={e => {
+            if (!showReviews) e.currentTarget.style.background = 'var(--bg-surface-2)';
+          }}
+        >
+          <Star size={14} fill={showReviews ? "#fff" : "none"} />
+          {showReviews ? 'Hide Reviews' : 'Reviews & Ratings'}
+        </button>
+
+        {showReviews && (
+          <ReviewSection 
+            businessId={biz.global_business_id}
+            initialRatings={localRatings}
+            initialReviewsCount={localReviewsCount}
+            isLoggedIn={isLoggedIn}
+            session={session}
+            onReviewUpdated={(newAvg, newCount) => {
+              setLocalRatings(newAvg);
+              setLocalReviewsCount(newCount);
+            }}
+          />
+        )}
       </div>
 
       {isOwner && (
