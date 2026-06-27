@@ -33,7 +33,7 @@ def generate_sql(query: str) -> str:
                 "2. ALWAYS use AND between city and business intent filters\n"
                 "3. Match business intent using PARTIAL ROOT WORDS\n"
                 "   (example: ayurvedic -> ayurved, restaurant -> restaur)\n"
-                "4. Match intent across business_nname OR business_category OR subcategory\n"
+                "4. Match intent across business_name OR business_category OR subcategory\n"
                 "5. Use LOWER(column) LIKE '%root%'\n"
                 "6. EXCLUDE businesses with ratings < 3.0\n"
                 "7. Ranking formula:\n"
