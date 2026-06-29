@@ -204,7 +204,7 @@ DB = os.path.join(
     "google_map_data.db"
 )
 
-def save_results_to_sqlite(results):
+#def save_results_to_sqlite(results):
     conn = sqlite3.connect(DB)
     cursor = conn.cursor()
 

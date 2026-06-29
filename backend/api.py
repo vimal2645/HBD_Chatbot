@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import os
-import sqlite3
 import re
 import uuid
 import json
@@ -16,6 +15,7 @@ import csv
 import random
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from db import get_connection
 
 load_dotenv()
 
@@ -409,13 +409,12 @@ def search(req: SearchRequest):
                 
                 # --- CASE 1: MANAGE PRODUCTS (Highest Priority) ---
                 if "manage product" in q_lower or "show product" in q_lower:
-                    conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-                    cur = conn.cursor()
-                    cur.execute("SELECT * FROM products WHERE business_id = ?", (biz_row.get("id"),))
-                    rows = cur.fetchall()
-                    cols = [c[0] for c in cur.description]
+                    conn = get_connection()
+                    cur = conn.cursor(dictionary=True)
+                    cur.execute("SELECT * FROM products WHERE business_id = %s", (biz_row.get("global_business_id"),))
+                    items = cur.fetchall()
+                    cur.close()
                     conn.close()
-                    items = [dict(zip(cols, r)) for r in rows]
                     if not items:
                         resp = {"type": "faq", "data": "You haven't added any products yet. Click 'Add Product' to start!"}
                     else:
@@ -427,13 +426,12 @@ def search(req: SearchRequest):
 
                 # --- CASE 2: MANAGE DEALS ---
                 elif "manage deal" in q_lower or "show deal" in q_lower:
-                    conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-                    cur = conn.cursor()
-                    cur.execute("SELECT * FROM deals WHERE business_id = ?", (biz_row.get("id"),))
-                    rows = cur.fetchall()
-                    cols = [c[0] for c in cur.description]
+                    conn = get_connection()
+                    cur = conn.cursor(dictionary=True)
+                    cur.execute("SELECT * FROM deals WHERE business_id = %s", (biz_row.get("global_business_id"),))
+                    items = cur.fetchall()
+                    cur.close()
                     conn.close()
-                    items = [dict(zip(cols, r)) for r in rows]
                     if not items:
                         resp = {"type": "faq", "data": "You haven't added any deals yet. Click 'Add Deal' to start!"}
                     else:
@@ -551,15 +549,14 @@ def search(req: SearchRequest):
                 if sql not in ["UNSAFE_QUERY", ""]:
                     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
                     DB_PATH = os.path.join(BASE_DIR, "google_map_data.db")
-                    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-                    cur = conn.cursor()
+                    conn = get_connection()
+                    cur = conn.cursor(dictionary=True)
                     cur.execute(sql)
                     rows = cur.fetchall()
                     print("SQL:", sql)
                     print("RowsFound:",len(rows))
-                    cols = [c[0] for c in cur.description] if cur.description else []
                     conn.close()
-                    if rows: return {"type": "database", "data": map_business_fields([dict(zip(cols, r)) for r in rows]), "intro": lang_fetch("found_results", lang)}
+                    if rows: return {"type": "database", "data": map_business_fields(rows), "intro": lang_fetch("found_results", lang)}
             except Exception as e:
                 print("SQL ERROR:",e)
     
@@ -591,7 +588,7 @@ def add_biz(req: BusinessAddRequest):
     try:
         from datetime import datetime
         print(f"DEBUG: add_biz request: {req.dict()}")
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        conn = get_connection()
         cur = conn.cursor()
         created_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         email_val = (req.email or "").strip().lower()
@@ -601,12 +598,13 @@ def add_biz(req: BusinessAddRequest):
             INSERT INTO {BIZ_TABLE} (
                 business_name, address, phone_number, business_category, city, area, state, 
                 reviews_count, ratings, created_at, email
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (req.name, req.address, req.phone, req.category, req.city, req.area, req.state, 0, 0.0, created_at, email_val)
         )
         new_id = cur.lastrowid
         conn.commit()
+        cur.close()
         conn.close()
 
         # Append to CSV
@@ -632,14 +630,15 @@ def add_product(req: AddProductRequest):
         print(f"DEBUG add_product: business_id={req.business_id}, name={req.name}, price={req.price}, category={req.category}")
         if not req.business_id:
             raise HTTPException(400, "business_id is required. Please login first.")
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        conn = get_connection()
         cur = conn.cursor()
         created_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         cur.execute("""
             INSERT INTO products (business_id, name, price, description, category, created_at, image_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (int(req.business_id), req.name, float(req.price), req.description or "", req.category or "", created_at, req.image_url or ""))
         conn.commit()
+        cur.close()
         conn.close()
         print(f"DEBUG add_product: SUCCESS for business_id={req.business_id}")
         return {"success": True}
@@ -653,14 +652,15 @@ def add_product(req: AddProductRequest):
 def add_deal(req: AddDealRequest):
     try:
         from datetime import datetime
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        conn = get_connection()
         cur = conn.cursor()
         created_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         cur.execute("""
             INSERT INTO deals (business_id, title, discount_pct, expiry_date, description, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
         """, (req.business_id, req.title, req.discount_pct, req.expiry_date, req.description, created_at))
         conn.commit()
+        cur.close()
         conn.close()
         return {"success": True}
     except Exception as e: raise HTTPException(400, str(e))
@@ -668,34 +668,35 @@ def add_deal(req: AddDealRequest):
 @app.get("/api/business/{biz_id}/products")
 def get_products(biz_id: int):
     try:
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM products WHERE business_id = ?", (biz_id,))
+        conn = get_connection()
+        cur = conn.cursor(ictionary=True)
+        cur.execute("SELECT * FROM products WHERE business_id = %s", (biz_id,))
         rows = cur.fetchall()
-        cols = [c[0] for c in cur.description]
+        cur.close()
         conn.close()
-        return [dict(zip(cols, r)) for r in rows]
+        return rows
     except Exception as e: raise HTTPException(400, str(e))
 
 @app.get("/api/business/{biz_id}/deals")
 def get_deals(biz_id: int):
     try:
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM deals WHERE business_id = ?", (biz_id,))
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM deals WHERE business_id = %s", (biz_id,))
         rows = cur.fetchall()
-        cols = [c[0] for c in cur.description]
+        cur.close()
         conn.close()
-        return [dict(zip(cols, r)) for r in rows]
+        return rows
     except Exception as e: raise HTTPException(400, str(e))
 
 @app.delete("/api/products/{product_id}")
 def delete_product(product_id: int):
     try:
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        conn = get_connection()
         cur = conn.cursor()
-        cur.execute("DELETE FROM products WHERE id = ?", (product_id,))
+        cur.execute("DELETE FROM products WHERE id = %s", (product_id,))
         conn.commit()
+        cur.close()
         conn.close()
         return {"success": True}
     except Exception as e: raise HTTPException(400, str(e))
@@ -703,10 +704,11 @@ def delete_product(product_id: int):
 @app.delete("/api/deals/{deal_id}")
 def delete_deal(deal_id: int):
     try:
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        conn = get_connection()
         cur = conn.cursor()
-        cur.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
+        cur.execute("DELETE FROM deals WHERE id = %s", (deal_id,))
         conn.commit()
+        cur.close()
         conn.close()
         return {"success": True}
     except Exception as e: raise HTTPException(400, str(e))
@@ -714,11 +716,11 @@ def delete_deal(deal_id: int):
 @app.get("/api/business/search-name")
 def search_by_name(name: str):
     try:
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute(f"SELECT * FROM {BIZ_TABLE} WHERE business_name LIKE ? LIMIT 10", (f"%{name}%",))
-        rows = [dict(r) for r in cur.fetchall()]
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"SELECT * FROM {BIZ_TABLE} WHERE business_name LIKE %s LIMIT 10", (f"%{name}%",))
+        rows = cur.fetchall()
+        cur.close()
         conn.close()
         return map_business_fields(rows)
     except Exception as e:
@@ -728,14 +730,14 @@ def search_by_name(name: str):
 @app.get("/api/business/search-address")
 def search_by_address(address: str):
     try:
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
         cur.execute(
-            f"SELECT * FROM {BIZ_TABLE} WHERE address LIKE ? OR area LIKE ? OR city LIKE ? LIMIT 10",
+            f"SELECT * FROM {BIZ_TABLE} WHERE address LIKE %s OR area LIKE %s OR city LIKE %s LIMIT 10",
             (f"%{address}%", f"%{address}%", f"%{address}%")
         )
-        rows = [dict(r) for r in cur.fetchall()]
+        rows = cur.fetchall()
+        cur.close() 
         conn.close()
         return map_business_fields(rows)
     except Exception as e:
@@ -745,10 +747,11 @@ def search_by_address(address: str):
 @app.get("/api/categories")
 def get_categories():
     try:
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute(f"SELECT business_category as name, COUNT(*) as count FROM {BIZ_TABLE} WHERE business_category IS NOT NULL AND business_category != '' GROUP BY business_category ORDER BY count DESC LIMIT 12")
         rows = cur.fetchall()
+        cur.close()
         conn.close()
         return [{"name": r[0], "category": r[0], "count": r[1]} for r in rows if r[0]]
     except Exception as e:
@@ -758,11 +761,11 @@ def get_categories():
 @app.get("/api/trending")
 def get_trending():
     try:
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
         cur.execute(f"SELECT * FROM {BIZ_TABLE} WHERE ratings > 0 ORDER BY ratings DESC, reviews_count DESC LIMIT 8")
-        rows = [dict(r) for r in cur.fetchall()]
+        rows = cur.fetchall()
+        cur.close()
         conn.close()
         return map_business_fields(rows)
     except Exception as e:
@@ -773,9 +776,8 @@ def get_trending():
 def get_analytics():
     """Power BI-style analytics data from real database"""
     try:
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
 
         # KPIs
         cur.execute(f"SELECT COUNT(*) as total FROM {BIZ_TABLE}")
@@ -859,7 +861,7 @@ def get_analytics():
                 SUBSTR(created_at, 1, 7) as month,
                 COUNT(*) as count
             FROM {BIZ_TABLE}
-            WHERE created_at IS NOT NULL AND created_at != ''
+            WHERE created_at IS NOT NULL
             GROUP BY month
             ORDER BY month
             LIMIT 12
@@ -890,6 +892,7 @@ def get_analytics():
         cur.execute("SELECT COUNT(*) as cnt FROM chat_sessions")
         total_chats = cur.fetchone()['cnt']
 
+        cur.close()
         conn.close()
 
         return {
@@ -928,11 +931,11 @@ def health(): return {"status": "ok", "database": "connected", "businesses": 507
 # CHAT MEMORY ENDPOINTS
 # =============================================================================
 
+from db import get_connection
+
 def get_chat_db():
-    """Returns a connection to google_map_data.db with row factory enabled."""
-    conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Returns a MySQL connection."""
+    return get_connection()
 
 @app.post("/api/chats")
 def create_chat_session(req: ChatSessionCreate):
@@ -943,10 +946,11 @@ def create_chat_session(req: ChatSessionCreate):
         conn = get_chat_db()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO chat_sessions (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO chat_sessions (id, user_id, title, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
             (session_id, req.user_id, req.title or "New Chat", now, now)
         )
         conn.commit()
+        cur.close()
         conn.close()
         return {"success": True, "session_id": session_id}
     except Exception as e:
@@ -1021,17 +1025,18 @@ def _save_chat_message(session_id: str, role: str, content: str):
     """Helper: Save a single message to chat_messages and update session updated_at."""
     try:
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO chat_messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            "INSERT INTO chat_messages (session_id, role, content, timestamp) VALUES (%s, %s, %s, %s)",
             (session_id, role, content, now)
         )
         cur.execute(
-            "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+            "UPDATE chat_sessions SET updated_at = %s WHERE id = %s",
             (now, session_id)
         )
         conn.commit()
+        cur.close()
         conn.close()
     except Exception as e:
         print(f"[Chat Save Error] {e}")
@@ -1039,14 +1044,14 @@ def _save_chat_message(session_id: str, role: str, content: str):
 def _get_recent_history(session_id: str, limit: int = 10):
     """Helper: Fetch the last N messages for a session to use as LLM context."""
     try:
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
         cur.execute(
-            "SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT role, content FROM chat_messages WHERE session_id = %s ORDER BY id DESC LIMIT %s",
             (session_id, limit)
         )
         rows = cur.fetchall()
+        cur.close()
         conn.close()
         # Reverse so oldest messages are first (chronological order for LLM)
         return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
@@ -1058,14 +1063,15 @@ def _update_session_title(session_id: str, first_message: str):
     """Set the session title from the first user message (truncated to 60 chars)."""
     try:
         title = first_message.strip()[:60]
-        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        conn = get_connection()
         cur = conn.cursor()
         # Only update if still default title
         cur.execute(
-            "UPDATE chat_sessions SET title = ? WHERE id = ? AND title = 'New Chat'",
+            "UPDATE chat_sessions SET title = %s WHERE id = %s AND title = 'New Chat'",
             (title, session_id)
         )
         conn.commit()
+        cur.close()
         conn.close()
     except Exception as e:
         print(f"[Title Update Error] {e}")
