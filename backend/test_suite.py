@@ -224,6 +224,73 @@ def run_tests():
         print(f"❌ Real-Time Analytics stats check failed: {e}")
         return
 
+    # 10. Reviews & Ratings System (Pagination, Duplication Prevention, Merchant Reply, Helpful Votes)
+    try:
+        # Create a mock business to review
+        ts = int(time.time())
+        payload_biz = {
+            "name": f"Test Reviews Shop {ts}",
+            "category": "Spa",
+            "phone": f"99999{ts % 100000:05d}",
+            "email": f"reviews_{ts}@shop.com",
+            "address": f"123 Review Lane {ts}",
+            "city": "surat",
+            "state": "Gujarat",
+            "area": "Athwa"
+        }
+        r_biz = requests.post(f"{BASE_URL}/api/business", json=payload_biz, headers=headers)
+        assert r_biz.status_code == 200
+        review_biz_id = r_biz.json()["id"]
+
+        # Add a review
+        payload_rev = {
+            "business_id": review_biz_id,
+            "user_id": "testuser1",
+            "rating": 5,
+            "comment": "Incredible service!"
+        }
+        r_rev = requests.post(f"{BASE_URL}/api/reviews", json=payload_rev)
+        assert r_rev.status_code == 200
+        assert r_rev.json()["success"] is True
+
+        # Prevent duplicate reviews per user
+        r_dup = requests.post(f"{BASE_URL}/api/reviews", json=payload_rev)
+        print("DUP STATUS:", r_dup.status_code)
+        print("DUP RESPONSE:", r_dup.text)
+        assert r_dup.status_code == 400
+
+        # Retrieve reviews list with pagination & sorting
+        r_get = requests.get(f"{BASE_URL}/api/reviews/{review_biz_id}?sort_by=newest&limit=5&offset=0")
+        assert r_get.status_code == 200
+        data_get = r_get.json()
+        assert "reviews" in data_get
+        assert data_get["total"] == 1
+        reviews_list = data_get["reviews"]
+        assert len(reviews_list) == 1
+        review_id = reviews_list[0]["id"]
+
+        # Vote Helpful
+        r_help = requests.post(f"{BASE_URL}/api/reviews/{review_id}/helpful")
+        assert r_help.status_code == 200
+        assert r_help.json()["helpful_votes"] == 1
+
+        # Merchant Reply
+        payload_reply = {
+            "reply": "Thank you so much!"
+        }
+        r_reply = requests.post(f"{BASE_URL}/api/reviews/{review_id}/reply", json=payload_reply, headers=headers)
+        assert r_reply.status_code == 200
+        assert r_reply.json()["success"] is True
+
+        # Clean up by deleting the mock business
+        requests.delete(f"{BASE_URL}/api/business/{review_biz_id}", headers=headers)
+        print("✅ Reviews system features (Duplication, Sorting, Helpful Votes, Merchant Reply) passed.")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Reviews system features check failed: {e}")
+        return
+
     print("\n🎉 ALL QA VERIFICATION TESTS PASSED SUCCESSFULLY! 🎉")
 
 if __name__ == "__main__":

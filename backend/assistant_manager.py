@@ -84,25 +84,99 @@ def get_greeting_response(language: str = "en") -> str:
     except:
         return "Hi! How can I help you today?"
 
-def classify_intent(user_query: str) -> str:
-    """Classifies user intent using LLM and returns the label only."""
-    if is_greeting(user_query):
-        return "FAQ"
+# System prompt for NLU parsing
+NLU_SYSTEM_PROMPT = """
+You are the advanced NLU (Natural Language Understanding) parsing module for the CityHangarounds AI assistant.
+Your job is to analyze the USER QUERY and return a structured JSON response containing intent classification, confidence scoring, multi-intent detection, entities, location extraction, and quick replies.
 
-    prompt = f"{MASTER_SYSTEM_PROMPT}\n\nUSER QUERY: \"{user_query}\"\n\nReturn ONLY the intent label from the allowed list."
-    
+SUPPORTED INTENTS:
+- FAQ: General platform questions (e.g., "what is this site?", "how do I use the chatbot?").
+- SEARCH_BUSINESS: User wants to find local businesses (e.g., "best pizza", "doctors in Delhi").
+- BUSINESS_STATUS: Questions about business hours or if it's currently open.
+- BUSINESS_UPDATE: User wants to modify their business info (e.g., "change my phone", "update hours").
+- LOGIN: User asks how to login or about accounts.
+- SUGGESTION: Suggesting categories, search trends, or recommendations.
+- FAST_RESULT: Direct specific database queries.
+
+You MUST return a strict JSON object with the following fields:
+1. "intents": A list of classified intent strings from the supported intents list in order of relevance. Support multi-intent if the user wants multiple things.
+2. "confidence": A float between 0.0 and 1.0 representing classification confidence.
+3. "entities": An object containing extracted entities:
+   - "category": e.g., "Restaurant", "Gym", "Dentist"
+   - "business_name": e.g., "Elite Gym", "Pizza Hut"
+   - "ratings": e.g., "4.5"
+   - "price": e.g., "cheap", "expensive"
+4. "locations": An object containing:
+   - "city": e.g., "Ahmedabad", "Pune"
+   - "area": e.g., "Maninagar", "Kothrud"
+5. "need_clarification": A boolean indicating if crucial search parameters (like category or city) are missing or ambiguous.
+6. "clarification_message": A helpful message asking the user for missing details in their preferred language.
+7. "quick_replies": A list of 2-3 quick button replies appropriate for the user's situation.
+
+Output ONLY valid strict JSON. Do not include markdown formatting or conversational text in your output.
+"""
+
+def parse_query_nlu(user_query: str, language: str = "en") -> dict:
+    """Classifies intent, extracts entities/locations, checks confidence, and builds quick replies."""
+    if is_greeting(user_query):
+        return {
+            "intents": ["FAQ"],
+            "confidence": 1.0,
+            "entities": {},
+            "locations": {},
+            "need_clarification": False,
+            "clarification_message": None,
+            "quick_replies": ["Search Businesses 🔍", "Manage Listing 🏢"]
+        }
+
+    messages = [
+        {"role": "system", "content": NLU_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Preferred Language: {language}\nUSER QUERY: \"{user_query}\""}
+    ]
     try:
-        response = call_llm([{"role": "user", "content": prompt}], model=MODEL)
-        content = response.get("content", "").strip().upper()
+        response = call_llm(messages=messages, model=MODEL)
+        content = response.get("content", "").strip()
         
-        valid_intents = ["FAQ", "SEARCH_BUSINESS", "BUSINESS_STATUS", "BUSINESS_UPDATE", "TEXT_TO_SQL", "LOGIN", "SUGGESTION", "FAST_RESULT", "UNKNOWN"]
-        for intent in valid_intents:
-            if intent in content:
-                return intent
-        return "UNKNOWN"
+        # Extract JSON
+        start_idx = content.find('{')
+        end_idx = content.rfind('}')
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            content = content[start_idx:end_idx+1]
+            
+        data = json.loads(content)
+        # Ensure all fields exist
+        if "intents" not in data or not data["intents"]:
+            data["intents"] = ["UNKNOWN"]
+        if "confidence" not in data:
+            data["confidence"] = 0.5
+        if "entities" not in data:
+            data["entities"] = {}
+        if "locations" not in data:
+            data["locations"] = {}
+        if "need_clarification" not in data:
+            data["need_clarification"] = False
+        if "clarification_message" not in data:
+            data["clarification_message"] = None
+        if "quick_replies" not in data:
+            data["quick_replies"] = []
+        return data
     except Exception as e:
-        print(f"Error in classify_intent: {e}")
-        return "SEARCH_BUSINESS"
+        print(f"[NLU Parser Error] {e}")
+        return {
+            "intents": ["SEARCH_BUSINESS"],
+            "confidence": 0.8,
+            "entities": {},
+            "locations": {},
+            "need_clarification": False,
+            "clarification_message": None,
+            "quick_replies": []
+        }
+
+def classify_intent(user_query: str) -> str:
+    """Classifies user intent using LLM (delegated to parse_query_nlu for consistency)."""
+    nlu = parse_query_nlu(user_query)
+    intents = nlu.get("intents", ["UNKNOWN"])
+    return intents[0] if intents else "UNKNOWN"
 
 def get_guidance(intent: str, query: str, language: str = "en") -> str:
     """Provides specific text-based guidance for missing information."""
@@ -158,21 +232,54 @@ def clean_history_message(role: str, content: str) -> str:
         pass
     return content
 
+def summarize_history(history: list, language: str = "en") -> str:
+    """Summarizes a list of chat history messages into a concise single paragraph context."""
+    if not history:
+        return ""
+    formatted = []
+    for h in history:
+        role = h.get("role", "user")
+        content = clean_history_message(role, h.get("content", ""))
+        formatted.append(f"{role.upper()}: {content}")
+    
+    prompt = f"""
+    Summarize the following chat conversation history between User and Assistant.
+    Provide a concise 2-3 sentence summary of the key context, user requests, and current status of the conversation.
+    Respond in {language.upper()} preferred language.
+    
+    CONVERSATION:
+    {"\n".join(formatted)}
+    """
+    try:
+        res = call_llm(messages=[{"role": "user", "content": prompt}], model=MODEL)
+        return res.get("content", "").strip()
+    except Exception as e:
+        print(f"[Summarizer Error] {e}")
+        return ""
+
 def get_assistant_response(query: str, context: str, language: str = "en", history: list = None) -> str:
-    """Generates a secure, concise response using provided context and optional conversation history."""
+    """Generates a secure, context-aware natural language response using summarized memory if history is long."""
+    # Summarize history if too long to maintain clean memory
+    history_context = ""
+    if history and len(history) > 6:
+        history_context = f"PREVIOUS CONVERSATION SUMMARY:\n{summarize_history(history, language)}\n"
+        history = history[-4:] # Keep last 4 messages for immediate detail
+        
     messages = [
         {"role": "system", "content": f"{MASTER_SYSTEM_PROMPT}\nUSER PREFERRED LANGUAGE: {language}\nPLEASE RESPOND IN {language.upper()}."},
         {"role": "system", "content": f"CONTEXT DATA:\n{context}"},
     ]
-    # Inject conversation history (memory) before the current user query
+    if history_context:
+        messages.append({"role": "system", "content": history_context})
+        
     if history:
         for h in history:
             role = h.get("role", "user")
-            # Normalize role: "assistant" -> "assistant", anything else -> "user"
             if role not in ("user", "assistant"):
                 role = "user"
             cleaned_content = clean_history_message(role, h.get("content", ""))
             messages.append({"role": role, "content": cleaned_content})
+            
     messages.append({"role": "user", "content": query})
     try:
         response = call_llm(messages=messages, model=MODEL)
@@ -185,12 +292,13 @@ def get_assistant_response(query: str, context: str, language: str = "en", histo
         }
         if language in emsg:
             return emsg[language] + f" ({e})"
-        
         try:
             prompt = f"Translate to language code {language}: 'I'm sorry, I'm having trouble processing that right now.'"
             res = call_llm([{"role": "user", "content": prompt}], model=MODEL)
             return res.get("content", "").strip()
         except:
             return emsg["en"]
+
+
 
 

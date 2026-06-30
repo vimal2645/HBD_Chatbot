@@ -257,6 +257,26 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
   const [localRatings, setLocalRatings] = useState(biz.ratings);
   const [localReviewsCount, setLocalReviewsCount] = useState(biz.reviews_count);
   const [showDealsAndProducts, setShowDealsAndProducts] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  const [analyticsData, setAnalyticsData] = useState(null);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+
+  const handleToggleAnalytics = async () => {
+    if (showAnalytics) {
+      setShowAnalytics(false);
+      return;
+    }
+    setShowAnalytics(true);
+    setLoadingAnalytics(true);
+    try {
+      const res = await api.getMerchantAnalytics(biz.global_business_id);
+      setAnalyticsData(res);
+    } catch (err) {
+      console.error("Failed to load merchant analytics:", err);
+    } finally {
+      setLoadingAnalytics(false);
+    }
+  };
 
   const isComparing = compareList && biz.global_business_id && compareList.some(c => c.global_business_id && Number(c.global_business_id) === Number(biz.global_business_id));
 
@@ -467,6 +487,26 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
               <span style={{ lineHeight: 1.3 }}>{biz.area ? `${biz.area}, ` : ''}{biz.address}</span>
             </div>
           )}
+          {(biz.address || biz.city) && (
+            <div style={{
+              width: '100%',
+              height: 100,
+              borderRadius: 8,
+              overflow: 'hidden',
+              border: '1px solid var(--border-subtle)',
+              marginTop: 4,
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <iframe
+                title="Map Preview"
+                width="100%"
+                height="100%"
+                style={{ border: 0 }}
+                loading="lazy"
+                src={`https://maps.google.com/maps?q=${encodeURIComponent(biz.business_name + ' ' + (biz.address || '') + ' ' + (biz.city || ''))}&t=&z=14&ie=UTF8&iwloc=&output=embed`}
+              />
+            </div>
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <Clock size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
             <span>Hours: {hours}</span>
@@ -609,6 +649,8 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
         {showDealsAndProducts && (
           <DealsAndProductsSection 
             businessId={biz.global_business_id}
+            isLoggedIn={isLoggedIn}
+            session={session}
           />
         )}
       </div>
@@ -679,7 +721,7 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
               🔥 Manage Deals
             </button>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 4 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 4 }}>
             <button
               onClick={() => onAction('update')}
               style={{
@@ -691,7 +733,20 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
               onMouseEnter={e => { e.currentTarget.style.background = '#d1fae5'; }}
               onMouseLeave={e => { e.currentTarget.style.background = '#ecfdf5'; }}
             >
-              🔄 Update Business
+              🔄 Update
+            </button>
+            <button
+              onClick={handleToggleAnalytics}
+              style={{
+                padding: '7px 8px', borderRadius: 8, border: '1px solid #c084fc',
+                background: '#faf5ff', color: '#7e22ce', fontSize: '0.75rem',
+                fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                transition: 'all 150ms ease'
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#f3e8ff'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#faf5ff'; }}
+            >
+              📊 Analytics
             </button>
             <button
               onClick={() => onAction('delete_business', biz.global_business_id)}
@@ -704,9 +759,48 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
               onMouseEnter={e => { e.currentTarget.style.background = '#fee2e2'; }}
               onMouseLeave={e => { e.currentTarget.style.background = '#fef2f2'; }}
             >
-              🗑️ Delete Listing
+              🗑️ Delete
             </button>
           </div>
+
+          {showAnalytics && (
+            <div style={{
+              marginTop: 10,
+              padding: 12,
+              background: 'var(--bg-surface)',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border-subtle)',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>📈 Performance</span>
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Real-time metrics</span>
+              </div>
+              {loadingAnalytics ? (
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center', padding: 8 }}>Loading stats...</div>
+              ) : analyticsData ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, textAlign: 'center' }}>
+                  <div style={{ padding: 6, background: 'var(--bg-surface-2)', borderRadius: 6 }}>
+                    <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Views</div>
+                    <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>{analyticsData.views}</div>
+                  </div>
+                  <div style={{ padding: 6, background: 'var(--bg-surface-2)', borderRadius: 6 }}>
+                    <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Searches</div>
+                    <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>{analyticsData.searches}</div>
+                  </div>
+                  <div style={{ padding: 6, background: 'var(--bg-surface-2)', borderRadius: 6 }}>
+                    <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Leads</div>
+                    <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>{analyticsData.leads}</div>
+                  </div>
+                  <div style={{ padding: 6, background: 'var(--bg-surface-2)', borderRadius: 6, gridColumn: 'span 3', display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                    <span>Conversion Rate: <strong>{analyticsData.conversion_rate}%</strong></span>
+                    <span>Avg Rating: <strong>{analyticsData.avg_rating} ⭐</strong></span>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize: '0.75rem', color: '#ef4444', textAlign: 'center' }}>Failed to load analytics.</div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -731,6 +825,110 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
   if (message.type === 'thinking') {
     // Handled by TypingIndicator in ChatArea
     return null;
+  }
+
+  // ── BUSINESS PREVIEW CARD ────────────────────────────
+  if (message.type === 'business_preview') {
+    const data = message.content || {};
+    return (
+      <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 16 }}>
+        <div style={{
+          width: 28, height: 28, borderRadius: '50%',
+          background: 'linear-gradient(135deg, #4f46e5, #7c3aed)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 13, flexShrink: 0, marginTop: 2, marginRight: 8
+        }}>
+          🐝
+        </div>
+        <div style={{
+          maxWidth: '85%',
+          background: 'var(--bg-surface)',
+          border: '2px solid var(--color-primary-border)',
+          borderRadius: 'var(--radius-lg)',
+          overflow: 'hidden',
+          boxShadow: 'var(--shadow-md)',
+          animation: 'slideUp 300ms ease',
+        }}>
+          <div style={{
+            padding: '12px 16px',
+            background: 'linear-gradient(135deg, var(--color-primary), var(--color-accent))',
+            color: 'white',
+            fontWeight: 700,
+            fontSize: '0.9rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between'
+          }}>
+            <span>🏢 Business Registration Preview</span>
+            <span style={{ fontSize: '0.75rem', background: 'rgba(255,255,255,0.2)', padding: '2px 8px', borderRadius: 12 }}>Draft</span>
+          </div>
+          <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '8px 12px', fontSize: '0.8125rem' }}>
+              <strong style={{ color: 'var(--text-muted)' }}>Business Name:</strong>
+              <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{data.name}</span>
+              
+              <strong style={{ color: 'var(--text-muted)' }}>Category:</strong>
+              <span style={{ color: 'var(--text-primary)' }}>{data.category}</span>
+              
+              <strong style={{ color: 'var(--text-muted)' }}>Registered Phone:</strong>
+              <span style={{ color: 'var(--text-primary)' }}>{data.phone}</span>
+              
+              <strong style={{ color: 'var(--text-muted)' }}>Registered Email:</strong>
+              <span style={{ color: 'var(--text-primary)' }}>{data.email}</span>
+              
+              <strong style={{ color: 'var(--text-muted)' }}>Address:</strong>
+              <span style={{ color: 'var(--text-primary)' }}>{data.address}</span>
+              
+              <strong style={{ color: 'var(--text-muted)' }}>City / State:</strong>
+              <span style={{ color: 'var(--text-primary)' }}>{data.city}, {data.state}</span>
+              
+              {data.area && (
+                <>
+                  <strong style={{ color: 'var(--text-muted)' }}>Area:</strong>
+                  <span style={{ color: 'var(--text-primary)' }}>{data.area}</span>
+                </>
+              )}
+
+              {/* Dynamic Category Specific Fields */}
+              {Object.keys(data).map(key => {
+                if (['name', 'category', 'phone', 'email', 'address', 'city', 'state', 'area', 'otp'].includes(key)) return null;
+                return (
+                  <React.Fragment key={key}>
+                    <strong style={{ color: 'var(--color-primary)', textTransform: 'capitalize' }}>
+                      {key.replace(/_/g, ' ')}:
+                    </strong>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{data[key]}</span>
+                  </React.Fragment>
+                );
+              })}
+            </div>
+            
+            <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+              <button
+                onClick={() => onAction('wizard_confirm')}
+                style={{
+                  flex: 1, padding: '9px 12px', background: '#10b981', color: 'white', border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer', transition: 'all 150ms'
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = '#059669'}
+                onMouseLeave={e => e.currentTarget.style.background = '#10b981'}
+              >
+                Confirm & Submit
+              </button>
+              <button
+                onClick={() => onAction('wizard_edit')}
+                style={{
+                  flex: 1, padding: '9px 12px', background: 'var(--bg-surface-2)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer', transition: 'all 150ms'
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-surface-3)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'var(--bg-surface-2)'}
+              >
+                Start Over / Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // ── SEARCH OPTIONS ────────────────────────────────────

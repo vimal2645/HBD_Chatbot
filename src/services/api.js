@@ -218,10 +218,17 @@ export const api = {
   }).then(handleResponse),
 
   // ── REVIEWS & RATINGS ──────────────────────────────────────────────────
-  getReviews: (businessId) => makeRequest(`/api/reviews/${businessId}`).then(handleResponse),
+  getReviews: (businessId, sortBy = 'newest', offset = 0, limit = 5) => 
+    makeRequest(`/api/reviews/${businessId}?sort_by=${sortBy}&offset=${offset}&limit=${limit}`).then(handleResponse),
 
   addReview: (reviewData) => makeRequest('/api/reviews', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reviewData)
+  }).then(handleResponse),
+
+  editReview: (reviewId, reviewData) => makeRequest(`/api/reviews/${reviewId}`, {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(reviewData)
   }).then(handleResponse),
@@ -230,9 +237,32 @@ export const api = {
     method: 'DELETE'
   }).then(handleResponse),
 
+  merchantReply: (reviewId, replyText) => makeRequest(`/api/reviews/${reviewId}/reply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reply: replyText })
+  }).then(handleResponse),
+
+  helpfulVote: (reviewId) => makeRequest(`/api/reviews/${reviewId}/helpful`, {
+    method: 'POST'
+  }).then(handleResponse),
+
+  getMerchantAnalytics: (businessId) => makeRequest(`/api/merchant/analytics/${businessId}`).then(handleResponse),
+
   // ── PRODUCTS & DEALS (ADS) ─────────────────────────────────────────────
   getProducts: (businessId) => makeRequest(`/api/business/${businessId}/products`).then(handleResponse),
   getDeals: (businessId) => makeRequest(`/api/business/${businessId}/deals`).then(handleResponse),
+
+  // ── PHOTOS GALLERY ──────────────────────────────────────────────────────
+  getPhotos: (businessId) => makeRequest(`/api/business/${businessId}/photos`).then(handleResponse),
+  addPhoto: (businessId, photoUrl) => makeRequest(`/api/business/${businessId}/photos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ photo_url: photoUrl })
+  }).then(handleResponse),
+  deletePhoto: (photoId) => makeRequest(`/api/photos/${photoId}`, {
+    method: 'DELETE'
+  }).then(handleResponse),
 };
 
 export default api;

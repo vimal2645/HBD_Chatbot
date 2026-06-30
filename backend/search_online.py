@@ -5,7 +5,7 @@ import pandas as pd
 from typing import List, Dict
 from datetime import datetime 
 import os
-from db import get_connection
+from db_pool import db_context
 import re
 import requests
 import html
@@ -84,8 +84,8 @@ def find_existing_business(cursor, business_name, city):
         """
         SELECT global_business_id
         FROM g_map_master_table
-        WHERE LOWER(business_name) = %s
-        AND LOWER(city) = %s
+        WHERE LOWER(business_name) = ?
+        AND LOWER(city) = ?
         LIMIT 1
         """,
         (business_name.strip().lower(), city.strip().lower())
@@ -94,7 +94,7 @@ def find_existing_business(cursor, business_name, city):
     row = cursor.fetchone()
 
     if row:
-        return row["global_business_id"]  # business id
+        return row["global_business_id"]
 
     return None
 
@@ -105,7 +105,7 @@ def update_existing_business(cursor, business_id, record):
         SELECT website_url, phone_number, reviews_count, ratings,
                city, state, area, subcategory
         FROM g_map_master_table
-        WHERE id = %s
+        WHERE global_business_id = ?
         """,
         (business_id,)
     )
@@ -134,15 +134,15 @@ def update_existing_business(cursor, business_id, record):
     cursor.execute(
         """
         UPDATE g_map_master_table
-        SET website_url = %s,
-            phone_number = %s,
-            reviews_count = %s,
-            ratings = %s,
-            city = %s,
-            state = %s,
-            area = %s,
-            subcategory = %s
-        WHERE global_business_id = %s
+        SET website_url = ?,
+            phone_number = ?,
+            reviews_count = ?,
+            ratings = ?,
+            city = ?,
+            state = ?,
+            area = ?,
+            subcategory = ?
+        WHERE global_business_id = ?
         """,
         (
             website_url,
@@ -174,7 +174,7 @@ def insert_new_business(cursor, record):
             area,
             created_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.get("business_name", ""),
@@ -188,67 +188,63 @@ def insert_new_business(cursor, record):
             record.get("city", ""),
             record.get("state", ""),
             record.get("area", ""),
-            datetime.now() 
+            datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         )
     )
 
 
 def save_results_to_mysql(results):
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
+    with db_context() as conn:
+        cursor = conn.cursor()
 
-    inserted = 0
-    updated = 0
-    skipped = 0
+        inserted = 0
+        updated = 0
+        skipped = 0
 
-    try:
-        for record in results:
+        try:
+            for record in results:
 
-            # Validation
-            if not validate_business(record):
-                skipped += 1
-                continue
+                # Validation
+                if not validate_business(record):
+                    skipped += 1
+                    continue
 
-            # Duplicate check
-            business_id = find_existing_business(
-                cursor,
-                record.get("business_name", ""),
-                record.get("city", "")
+                # Duplicate check
+                business_id = find_existing_business(
+                    cursor,
+                    record.get("business_name", ""),
+                    record.get("city", "")
+                )
+
+                if business_id:
+                    update_existing_business(
+                        cursor,
+                        business_id,
+                        record
+                    )
+                    record["global_business_id"] = business_id
+                    updated += 1
+                else:
+                    insert_new_business(
+                        cursor,
+                        record
+                    )
+                    record["global_business_id"] = cursor.lastrowid
+                    inserted += 1
+
+            conn.commit()
+
+            print(
+                f"SQLite Sync Complete | "
+                f"Inserted={inserted}, "
+                f"Updated={updated}, "
+                f"Skipped={skipped}"
             )
 
-            if business_id:
-                update_existing_business(
-                    cursor,
-                    business_id,
-                    record
-                )
-                record["global_business_id"] = business_id
-                updated += 1
-            else:
-                insert_new_business(
-                    cursor,
-                    record
-                )
-                record["global_business_id"] = cursor.lastrowid
-                inserted += 1
-
-        conn.commit()
-
-        print(
-            f"MySQL Sync Complete | "
-            f"Inserted={inserted}, "
-            f"Updated={updated}, "
-            f"Skipped={skipped}"
-        )
-
-    except Exception as e:
-        conn.rollback()
-        print(f"MySQL Sync Error: {e}")
-        raise
-
-    finally:
-        cursor.close()
-        conn.close()
+        except Exception as e:
+            conn.rollback()
+            print(f"SQLite Sync Error: {e}")
+            raise
 def scrape_ddg_results(query: str) -> List[Dict]:
     url = f"https://html.duckduckgo.com/html/?q={requests.utils.quote(query)}"
     headers = {

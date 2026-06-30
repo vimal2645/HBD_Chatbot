@@ -553,7 +553,7 @@ const ChatArea = (props) => {
       setLocalMessages(prev => [...prev, { id: Date.now(), role: 'user', type: 'text', content: actionLabels[action] }]);
     }
 
-    if (action === 'next_option' || action === 'prev_option' || action === 'filter_area' || action === 'filter_rating' || action === 'search_another') {
+    if (action === 'next_option' || action === 'prev_option' || action === 'filter_area' || action === 'filter_rating' || action === 'search_another' || action === 'query_rewrite') {
       handleSend(null, payload);
       return;
     }
@@ -601,8 +601,20 @@ const ChatArea = (props) => {
     }
 
     if (action === 'go_back') return handleBack();
+    if (action === 'resend') {
+      wizards.handleWizardSend('resend');
+      return;
+    }
     if (action === 'login_trigger') return setShowLoginPopup(true);
     if (action === 'cancel_sub_menu') return;
+    if (action === 'wizard_confirm') {
+      wizards.confirmBusinessOnboarding(trans);
+      return;
+    }
+    if (action === 'wizard_edit') {
+      wizards.cancelBusinessOnboarding(trans);
+      return;
+    }
 
     if (action === 'search_method') {
       setLocalMessages(prev => [...prev, { id: Date.now(), role: 'user', type: 'text', content: trans.btn_find }]);
@@ -616,6 +628,7 @@ const ChatArea = (props) => {
     if (action === 'search_by_name') { setFlowMode('SEARCH_NAME'); setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: trans.search_prompt }]); }
     if (action === 'search_by_address') { setFlowMode('SEARCH_ADDR'); setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: trans.address_prompt }]); }
     if (action === 'add_new_business') {
+      wizards.setWizardStepsList(ADD_BIZ_STEPS);
       setFlowMode('ADD_WIZARD'); setWizardStep(0);
       const initialData = {};
       if (session.phone) initialData.phone = session.phone;
@@ -623,6 +636,7 @@ const ChatArea = (props) => {
       setWizardData(initialData);
       setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: trans.prompt_phone }]);
     }
+
     if (action === 'start_add_product') {
       if (!session.businessId) return setShowLoginPopup(true);
       const steps = getAddProductSteps(trans);
