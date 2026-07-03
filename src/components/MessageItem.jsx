@@ -233,14 +233,54 @@ function getOpeningHours(category) {
   if (cat.includes('restaurant') || cat.includes('food') || cat.includes('cafe')) {
     return { hours: "11:00 AM - 11:00 PM", status: "Open Now" };
   } else if (cat.includes('gym') || cat.includes('fitness') || cat.includes('sports')) {
-    return { hours: "6:00 AM - 10:00 PM", status: "Open Now" };
+    return { hours: "06:00 AM - 10:00 PM", status: "Open Now" };
   } else if (cat.includes('doctor') || cat.includes('clinic') || cat.includes('hospital')) {
-    return { hours: "9:00 AM - 7:00 PM", status: "Open Now" };
+    return { hours: "09:00 AM - 07:00 PM", status: "Open Now" };
   } else if (cat.includes('services') || cat.includes('it') || cat.includes('agency') || cat.includes('office')) {
-    return { hours: "9:00 AM - 6:00 PM", status: "Open Now" };
+    return { hours: "09:00 AM - 06:00 PM", status: "Open Now" };
   } else {
-    return { hours: "9:00 AM - 9:00 PM", status: "Open Now" };
+    return { hours: "09:00 AM - 08:00 PM", status: "Open Now" };
   }
+}
+
+function getOpeningStatus(openingHours, category) {
+  const hours = openingHours || getOpeningHours(category).hours;
+  if (!hours || hours.toLowerCase() === 'none' || hours.trim() === '') {
+    return { hours: "09:00 AM - 08:00 PM", isOpen: true, statusText: "Open Now" };
+  }
+  if (hours.toLowerCase().includes('24 hours') || hours.toLowerCase().includes('24x7')) {
+    return { hours, isOpen: true, statusText: "Open Now (24 Hours)" };
+  }
+  
+  try {
+    const now = new Date();
+    const currentHour = now.getHours();
+    const matches = hours.match(/(\d+):(\d+)\s*(AM|PM)/ig);
+    if (matches && matches.length === 2) {
+      const parseTime = (timeStr) => {
+        const parts = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
+        if (!parts) return 0;
+        let h = parseInt(parts[1]);
+        const ampm = parts[3].toUpperCase();
+        if (ampm === 'PM' && h < 12) h += 12;
+        if (ampm === 'AM' && h === 12) h = 0;
+        return h;
+      };
+      
+      const startH = parseTime(matches[0]);
+      const endH = parseTime(matches[1]);
+      const isOpen = currentHour >= startH && currentHour < endH;
+      return {
+        hours,
+        isOpen,
+        statusText: isOpen ? "Open Now" : "Closed"
+      };
+    }
+  } catch (e) {
+    console.error("Error parsing hours:", e);
+  }
+  
+  return { hours, isOpen: true, statusText: "Open Now" };
 }
 
 // ─────────────────────────────────────────────────────────
@@ -251,7 +291,7 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
   const avatarStyle = getAvatarStyle(biz.business_name || 'B');
   const coverStyle = getAvatarStyle((biz.business_name || 'B') + "_cover");
   const firstLetter = String(biz.business_name || 'B').trim().charAt(0).toUpperCase();
-  const { hours, status } = getOpeningHours(biz.business_category);
+  const { hours, isOpen, statusText } = getOpeningStatus(biz.opening_hours, biz.business_category);
 
   const [showReviews, setShowReviews] = useState(false);
   const [localRatings, setLocalRatings] = useState(biz.ratings);
@@ -285,11 +325,9 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
     onAction('toggle_compare', biz);
   };
 
-  // Bookmarking state
   const [bookmarked, setBookmarked] = useState(false);
   const userId = session?.phone || session?.email || localStorage.getItem('guest_user_id') || 'guest';
 
-  // Check if bookmarked on mount
   useEffect(() => {
     let active = true;
     const checkBookmark = async () => {
@@ -325,12 +363,12 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
 
   const handleShare = async (e) => {
     e.stopPropagation();
-    const shareUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(biz.business_name + ' ' + (biz.address || '') + ' ' + (biz.city || ''))}`;
+    const shareUrl = biz.google_maps_link || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(biz.business_name + ' ' + (biz.address || '') + ' ' + (biz.city || ''))}`;
     try {
       if (navigator.share) {
         await navigator.share({
           title: biz.business_name,
-          text: `Check out ${biz.business_name} on CityHangarounds!`,
+          text: `Check out ${biz.business_name} on HoneyBee Digital!`,
           url: shareUrl,
         });
       } else {
@@ -360,25 +398,37 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
     >
       {/* Premium Cover Banner */}
       <div style={{
-        height: 64,
-        ...coverStyle,
+        height: 72,
         position: 'relative',
-        opacity: 0.85
-      }} />
+        overflow: 'hidden',
+        background: biz.image_url ? `url(${biz.image_url}) center/cover no-repeat` : undefined,
+        ...(!biz.image_url ? coverStyle : {}),
+      }}>
+        {biz.image_url && (
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'linear-gradient(to bottom, rgba(0,0,0,0.1), rgba(0,0,0,0.45))'
+          }} />
+        )}
+      </div>
 
-      {/* Compare Checkbox (Absolute Top Left) */}
+      {/* Compare Checkbox */}
       <div style={{
         position: 'absolute',
         top: 10,
         left: 10,
-        background: 'rgba(255, 255, 255, 0.25)',
-        backdropFilter: 'blur(4px)',
+        background: 'rgba(0, 0, 0, 0.4)',
+        backdropFilter: 'blur(6px)',
         border: 'none',
         borderRadius: 6,
-        padding: '2px 6px',
+        padding: '3px 8px',
         display: 'flex',
         alignItems: 'center',
-        gap: 4,
+        gap: 5,
         cursor: 'pointer',
         fontSize: '0.65rem',
         fontWeight: 700,
@@ -396,7 +446,7 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
         Compare
       </div>
 
-      {/* SVG Letter Avatar (Offset Overlap) */}
+      {/* Letter Avatar (Offset Overlap) */}
       <div style={{
         width: 44,
         height: 44,
@@ -409,7 +459,7 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
         fontSize: '1.1rem',
         flexShrink: 0,
         position: 'absolute',
-        top: 42,
+        top: 50,
         left: 14,
         border: '3px solid var(--bg-surface)',
         zIndex: 2,
@@ -418,15 +468,15 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
         {firstLetter}
       </div>
 
-      {/* Bookmark Toggle (Absolute Top Right) */}
+      {/* Bookmark Toggle */}
       <button 
         onClick={handleBookmarkToggle}
         style={{
           position: 'absolute',
           top: 10,
           right: 10,
-          background: 'rgba(255, 255, 255, 0.25)',
-          backdropFilter: 'blur(4px)',
+          background: 'rgba(0, 0, 0, 0.4)',
+          backdropFilter: 'blur(6px)',
           border: 'none',
           borderRadius: '50%',
           width: 28,
@@ -435,18 +485,18 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
           alignItems: 'center',
           justifyContent: 'center',
           cursor: 'pointer',
-          color: bookmarked ? '#e11d48' : '#ffffff',
+          color: bookmarked ? '#f43f5e' : '#ffffff',
           transition: 'all var(--transition-fast)',
           zIndex: 5
         }}
         onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.1)'; }}
         onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
       >
-        <Bookmark size={14} fill={bookmarked ? '#e11d48' : 'none'} />
+        <Bookmark size={14} fill={bookmarked ? '#f43f5e' : 'none'} />
       </button>
 
       {/* Card Body */}
-      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: '26px 14px 14px 14px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: '30px 14px 14px 14px' }}>
         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
           <span className="badge badge-primary" style={{ fontSize: '0.625rem', fontWeight: 700, padding: '2px 8px' }}>
             {biz.business_category || 'Business'}
@@ -456,22 +506,44 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
             fontWeight: 700,
             padding: '2px 8px',
             borderRadius: 'var(--radius-full)',
-            background: '#d1fae5',
-            color: '#065f46',
+            background: isOpen ? '#d1fae5' : '#fee2e2',
+            color: isOpen ? '#065f46' : '#991b1b',
             display: 'inline-flex',
             alignItems: 'center',
             gap: 3
           }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#10b981' }}></span>
-            {status}
+            <span style={{ width: 5, height: 5, borderRadius: '50%', background: isOpen ? '#10b981' : '#ef4444' }}></span>
+            {statusText}
           </span>
         </div>
 
-        <h4 className="biz-card-name" style={{ fontSize: '0.9375rem', fontWeight: 800, margin: '0 0 6px 0', color: 'var(--text-primary)', lineHeight: 1.3 }}>
+        <h4 className="biz-card-name" style={{ 
+          fontSize: '0.9375rem', 
+          fontWeight: 800, 
+          margin: '0 0 4px 0', 
+          color: 'var(--text-primary)', 
+          lineHeight: 1.3,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6
+        }}>
           {biz.business_name}
+          {(biz.verified_status === 'verified' || biz.owner_id) && (
+            <span title="Verified Merchant" style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#3b82f6',
+              flexShrink: 0
+            }}>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+              </svg>
+            </span>
+          )}
         </h4>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <StarRating rating={localRatings} />
           {localReviewsCount > 0 && (
             <span style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
@@ -479,6 +551,22 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
             </span>
           )}
         </div>
+
+        {biz.business_description && (
+          <p style={{
+            fontSize: '0.72rem',
+            color: 'var(--text-secondary)',
+            lineHeight: 1.4,
+            margin: '0 0 10px 0',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis'
+          }}>
+            {biz.business_description}
+          </p>
+        )}
 
         <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 6, flex: 1, marginBottom: 12 }}>
           {biz.address && (
@@ -503,7 +591,7 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList }) {
                 height="100%"
                 style={{ border: 0 }}
                 loading="lazy"
-                src={`https://maps.google.com/maps?q=${encodeURIComponent(biz.business_name + ' ' + (biz.address || '') + ' ' + (biz.city || ''))}&t=&z=14&ie=UTF8&iwloc=&output=embed`}
+                src={biz.google_maps_link && biz.google_maps_link.includes('output=embed') ? biz.google_maps_link : `https://maps.google.com/maps?q=${encodeURIComponent(biz.business_name + ' ' + (biz.address || '') + ' ' + (biz.city || ''))}&t=&z=14&ie=UTF8&iwloc=&output=embed`}
               />
             </div>
           )}

@@ -520,7 +520,6 @@ id,name,address,website,phone_number,reviews_count,reviews_avg,category,subcateg
 574,Merchant Test Cafe,123 Main St,,1234567890,0,0.0,Cafe,,pune,,,2026-06-26T16:04:19,testmerchant_9705@example.com
 575,Merchant Test Cafe,123 Main St,,1234567890,0,0.0,Cafe,,pune,,,2026-06-26T16:04:39,testmerchant_1632@example.com
 =======
-682,chatwala,varanasi,,9336058326,0,0.0,food,,varanasi,up,varansi,2026-06-26T10:49:58,vimalprakashgnesvns@gmail.com
 586,ai scanner,"online , varanasi",,9336058326,0,0.0,job search,,varanasi,up,varanasi,2026-06-26T12:38:19,vimalprakashgnesvns@gmail.com
 598,ai resume,up varanasi pandeypur,,9336058326,0,0.0,job,,varanasi,uttar pradesh,varanasi,2026-06-26T12:48:53,vimalprakashgnesvns@gmail.com
 >>>>>>> upstream/main

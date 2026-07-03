@@ -351,7 +351,6 @@ BIZ_TABLE = "g_map_master_table"
 def map_business_fields(biz_list):
     mapped_list = []
     for biz in biz_list:
-        # Support both old google_maps_listings field names and new g_map_master_table names
         mapped = {
             "global_business_id": biz.get("global_business_id") or biz.get("id"),
             "business_name": biz.get("business_name") or biz.get("name"),
@@ -361,12 +360,23 @@ def map_business_fields(biz_list):
             "area": biz.get("area"),
             "city": biz.get("city"),
             "state": biz.get("state"),
-            "ratings": biz.get("ratings") or biz.get("reviews_avg") or biz.get("reviews_average") or 0,
+            "ratings": biz.get("ratings") or biz.get("reviews_avg") or biz.get("reviews_average") or 0.0,
             "reviews_count": biz.get("reviews_count", 0),
             "phone_number": biz.get("phone_number"),
             "address": biz.get("address"),
             "email": biz.get("email"),
-            "owner_id": biz.get("owner_id")
+            "owner_id": biz.get("owner_id"),
+            # Enrichment fields
+            "image_url": biz.get("image_url"),
+            "google_maps_link": biz.get("google_maps_link"),
+            "latitude": biz.get("latitude"),
+            "longitude": biz.get("longitude"),
+            "opening_hours": biz.get("opening_hours"),
+            "business_description": biz.get("business_description") or biz.get("description") or "",
+            "source": biz.get("source") or "database",
+            "confidence_score": biz.get("confidence_score") or 1.0,
+            "verified_status": biz.get("verified_status") or ("verified" if biz.get("owner_id") else "unverified"),
+            "updated_timestamp": biz.get("updated_timestamp")
         }
         # Preserve dynamic fields like products, deals, bookmarks
         for key in ["products", "deals", "bookmarked", "is_bookmarked"]:
@@ -925,7 +935,6 @@ def extract_search_params(query_str: str):
             break
             
     found_cats = []
-    # Find all matching categories in the query string
     for cat in sorted(CATEGORIES_CACHE, key=len, reverse=True):
         pattern = r"\b" + re.escape(cat) + r"\b"
         if cat.endswith('s'):
@@ -937,7 +946,6 @@ def extract_search_params(query_str: str):
             if cat not in found_cats:
                 found_cats.append(cat)
                 
-    # If we found multiple categories (e.g. 'atm and bank'), return them joined by ' and '
     if found_cats:
         found_cats.sort(key=lambda x: q.find(x))
         found_category = " and ".join(found_cats[:3])
@@ -953,22 +961,6 @@ def extract_search_params(query_str: str):
             
     return found_category, found_city, found_area
 
-
-def is_conversational_question(query_str: str) -> bool:
-    """Helper to detect if a query is a general conversational question about a category rather than a business search."""
-    q = query_str.lower().strip()
-    question_starters = [
-        "what is", "what are", "how to", "how do", "why do", "why is", "who is", "who are",
-        "explain", "tell me about", "tell me what", "can you explain", "what does"
-    ]
-    if any(q.startswith(starter) for starter in question_starters):
-        # If it also explicitly contains search keywords like 'in [city]' or 'near', treat as search
-        if " in " in q or "near" in q or "where is" in q:
-            return False
-        return True
-    return False
-
-
 def _get_last_search_metadata(session_id: str):
     """Retrieves the search_metadata dictionary from the last assistant database response in this session."""
     if not session_id:
@@ -977,7 +969,6 @@ def _get_last_search_metadata(session_id: str):
         conn = sqlite3.connect(DATABASE_URL)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
-        # Look back up to 10 assistant messages to find the last database search response containing metadata
         cur.execute(
             "SELECT content FROM chat_messages WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 10",
             (session_id,)
@@ -996,114 +987,226 @@ def _get_last_search_metadata(session_id: str):
         print(f"[Metadata Fetch Error] {e}")
     return None
 
+def get_standard_hours(category: str) -> str:
+    cat = str(category or "").lower()
+    if "restaurant" in cat or "food" in cat or "cafe" in cat:
+        return "11:00 AM - 11:00 PM"
+    elif "gym" in cat or "fitness" in cat:
+        return "06:00 AM - 10:00 PM"
+    elif "hospital" in cat:
+        return "24 Hours"
+    elif "doctor" in cat or "clinic" in cat or "dentist" in cat:
+        return "09:00 AM - 07:00 PM"
+    elif "school" in cat or "education" in cat:
+        return "08:00 AM - 03:00 PM"
+    return "09:00 AM - 08:00 PM"
 
-def query_local_businesses(category: str, city: str, offset: int = 0, limit: int = 10, area: str = None, min_rating: float = None, open_only: bool = False):
+def query_local_businesses(category: str, city: str, offset: int = 0, limit: int = 10, area: str = None, min_rating: float = None, open_only: bool = False, filters: dict = None, ranking_intent: str = None):
     with db_context() as conn:
         cur = conn.cursor()
-        
-        # Support multiple categories joined by ' and '
-        categories = [c.strip() for c in category.split(" and ")]
-        
-        cat_conditions = []
+        conditions = []
         params = []
-        for cat in categories:
-            cat_conditions.append("(LOWER(business_category) LIKE ? OR LOWER(subcategory) LIKE ? OR LOWER(business_name) LIKE ?)")
-            params.extend([f"%{cat}%", f"%{cat}%", f"%{cat}%"])
+        
+        # Category match
+        if category:
+            categories = [c.strip() for c in category.split(" and ")]
+            cat_conditions = []
+            for cat in categories:
+                cat_conditions.append("(LOWER(business_category) LIKE ? OR LOWER(subcategory) LIKE ? OR LOWER(business_name) LIKE ?)")
+                params.extend([f"%{cat}%", f"%{cat}%", f"%{cat}%"])
+            conditions.append("(" + " OR ".join(cat_conditions) + ")")
             
-        cat_clause = "(" + " OR ".join(cat_conditions) + ")"
-        
-        conditions = [cat_clause, "LOWER(city) LIKE ?"]
-        params.append(f"%{city}%")
-        
+        # City match
+        if city and city.lower() != "india":
+            conditions.append("LOWER(city) LIKE ?")
+            params.append(f"%{city}%")
+            
+        # Area match
         if area:
             conditions.append("REPLACE(LOWER(area), ' ', '') LIKE ?")
             params.append(f"%{area.lower().replace(' ', '').strip()}%")
+            
+        # Min rating
         if min_rating:
             conditions.append("ratings >= ?")
             params.append(float(min_rating))
             
+        # Extra Filters (family, vegetarian, 24x7, etc.)
+        if filters:
+            if filters.get("veg"):
+                conditions.append("(LOWER(business_name) LIKE ? OR LOWER(subcategory) LIKE ? OR LOWER(business_description) LIKE ?)")
+                params.extend(["%veg%", "%veg%", "%veg%"])
+            if filters.get("24x7"):
+                conditions.append("(LOWER(opening_hours) LIKE ? OR LOWER(subcategory) LIKE ?)")
+                params.extend(["%24 hours%", "%24x7%"])
+            if filters.get("parking"):
+                conditions.append("(LOWER(business_description) LIKE ? OR LOWER(subcategory) LIKE ?)")
+                params.extend(["%parking%", "%valet%"])
+            if filters.get("wheelchair"):
+                conditions.append("(LOWER(business_description) LIKE ?)")
+                params.append("%wheelchair%")
+            if filters.get("family"):
+                conditions.append("(LOWER(business_description) LIKE ? OR LOWER(subcategory) LIKE ?)")
+                params.extend(["%family%", "%kids%"])
+                
         where_clause = " AND ".join(conditions)
-        query_sql = f"""
-            SELECT *
-            FROM g_map_master_table
-            WHERE {where_clause}
-        """
+        if where_clause:
+            query_sql = f"SELECT * FROM g_map_master_table WHERE {where_clause}"
+        else:
+            query_sql = "SELECT * FROM g_map_master_table"
+            
         cur.execute(query_sql, params)
         rows = [dict(r) for r in cur.fetchall()]
         
-        # Hydrate dynamic hours and check open status
+        # Hydrate dynamic hours and status if opening_hours is empty/missing
         import datetime
         now = datetime.datetime.now()
         current_hour = now.hour
         
         for r in rows:
-            cat = str(r.get("business_category") or r.get("subcategory") or "").lower()
-            if "restaurant" in cat or "food" in cat or "cafe" in cat:
-                start, end = 11, 23
-            elif "gym" in cat or "fitness" in cat or "sports" in cat:
-                start, end = 6, 22
-            elif "doctor" in cat or "clinic" in cat or "hospital" in cat:
-                start, end = 9, 19
-            elif "services" in cat or "it" in cat or "agency" in cat or "office" in cat:
-                start, end = 9, 18
+            cat_str = str(r.get("business_category") or r.get("subcategory") or "").lower()
+            hours_str = r.get("opening_hours")
+            if not hours_str or "none" in hours_str.lower() or not hours_str.strip():
+                hours_str = get_standard_hours(cat_str)
+                r["opening_hours"] = hours_str
+            
+            # Check open status dynamically
+            is_open = True
+            if "24 hours" in hours_str.lower() or "24x7" in hours_str.lower():
+                is_open = True
             else:
-                start, end = 9, 21
-                
-            is_open = start <= current_hour < end
+                try:
+                    time_parts = re.findall(r'(\d+):(\d+)\s*(AM|PM)', hours_str, re.IGNORECASE)
+                    if len(time_parts) == 2:
+                        sh, sm, s_ampm = int(time_parts[0][0]), int(time_parts[0][1]), time_parts[0][2].upper()
+                        eh, em, e_ampm = int(time_parts[1][0]), int(time_parts[1][1]), time_parts[1][2].upper()
+                        
+                        start_h = sh + (12 if s_ampm == "PM" and sh < 12 else 0)
+                        start_h = 0 if s_ampm == "AM" and sh == 12 else start_h
+                        end_h = eh + (12 if e_ampm == "PM" and eh < 12 else 0)
+                        end_h = 0 if e_ampm == "AM" and eh == 12 else end_h
+                        
+                        if start_h <= current_hour < end_h:
+                            is_open = True
+                        else:
+                            is_open = False
+                except:
+                    is_open = True
+            
             r["is_currently_open"] = 1 if is_open else 0
             
-            # Category boost score calculation
-            is_exact = 1 if any(cat_part in str(r.get("business_category") or "").lower() for cat_part in categories) else 0
+            # Rank score computation based on multiple criteria:
+            # - Rating * 2.5
+            # - Review count * 0.02 (capped at 5)
+            # - Completeness -> up to 3 points
+            # - Freshness -> up to 1.5 points
+            # - Verification -> 2.0 points
+            # - Exact match -> 3 points
+            rating = float(r.get("ratings") or 0.0)
+            reviews_count = int(r.get("reviews_count") or 0)
             
-            # Area match boost
-            area_match = 1 if area and area.lower() in str(r.get("area") or "").lower() else 0
+            completeness = 0.0
+            if r.get("website_url"): completeness += 0.5
+            if r.get("phone_number"): completeness += 0.5
+            if r.get("email"): completeness += 0.5
+            if r.get("image_url") and "unsplash" in r.get("image_url"): completeness += 1.0
+            if r.get("business_description") or r.get("description"): completeness += 0.5
             
-            # Calculate intelligent rank score
-            r["search_score"] = (r.get("ratings") or 0.0) * 1.5 + (r.get("reviews_count") or 0) * 0.01 + (is_exact * 5.0) + (area_match * 10.0) + (10.0 if is_open else 0.0)
-
+            freshness = 0.0
+            created_at = r.get("created_at")
+            if created_at:
+                try:
+                    dt = datetime.datetime.strptime(created_at[:10], "%Y-%m-%d")
+                    days = (datetime.datetime.now() - dt).days
+                    freshness = max(0.0, (365.0 - days) / 365.0) * 1.5
+                except:
+                    pass
+            
+            verification = 2.0 if r.get("owner_id") else 0.0
+            
+            exact_cat_boost = 0.0
+            if category:
+                for c_part in category.split(" and "):
+                    if c_part.lower() in str(r.get("business_category") or "").lower():
+                        exact_cat_boost += 3.0
+                        break
+            
+            # Price filters (budget/luxury boost)
+            price_boost = 0.0
+            if filters:
+                desc_lower = (str(r.get("business_description") or "") + " " + str(r.get("subcategory") or "") + " " + str(r.get("business_name") or "")).lower()
+                if filters.get("budget"):
+                    if any(w in desc_lower for w in ["budget", "cheap", "affordable", "value", "hostel", "economy", "dhaba", "low cost", "low-cost"]):
+                        price_boost += 6.0
+                    if any(w in desc_lower for w in ["luxury", "premium", "5 star", "resort", "expensive", "elite"]):
+                        price_boost -= 6.0
+                if filters.get("luxury"):
+                    if any(w in desc_lower for w in ["luxury", "premium", "5 star", "resort", "expensive", "elite", "deluxe", "boutique", "fine dine"]):
+                        price_boost += 6.0
+                    if any(w in desc_lower for w in ["cheap", "budget", "hostel", "dhaba", "economy"]):
+                        price_boost -= 6.0
+            
+            r["search_score"] = (rating * 2.5) + min(5.0, reviews_count * 0.02) + completeness + freshness + verification + exact_cat_boost + price_boost
+            
         # Filter if open_only requested
-        if open_only:
+        if open_only or (filters and filters.get("open_now")):
             rows = [r for r in rows if r.get("is_currently_open") == 1]
             
-        # Sort by search_score DESC
-        rows.sort(key=lambda x: x.get("search_score", 0.0), reverse=True)
-        
-        # Paginate
-        paginated_rows = rows[offset:offset+limit]
-        return paginated_rows
+        # Sort based on ranking intent or search score
+        if ranking_intent == "highest_rated" or ranking_intent == "best":
+            rows.sort(key=lambda x: (float(x.get("ratings") or 0.0), x.get("search_score", 0.0)), reverse=True)
+        elif ranking_intent == "most_reviewed":
+            rows.sort(key=lambda x: (int(x.get("reviews_count") or 0), x.get("search_score", 0.0)), reverse=True)
+        elif ranking_intent == "newest" or ranking_intent == "recently_added":
+            rows.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+        else:
+            rows.sort(key=lambda x: x.get("search_score", 0.0), reverse=True)
+            
+        return rows[offset:offset+limit]
 
-
-def count_local_businesses(category: str, city: str, area: str = None, min_rating: float = None):
+def count_local_businesses(category: str, city: str, area: str = None, min_rating: float = None, filters: dict = None):
     with db_context() as conn:
         cur = conn.cursor()
-        
-        # Support multiple categories joined by ' and '
-        categories = [c.strip() for c in category.split(" and ")]
-        
-        cat_conditions = []
+        conditions = []
         params = []
-        for cat in categories:
-            cat_conditions.append("(LOWER(business_category) LIKE ? OR LOWER(subcategory) LIKE ? OR LOWER(business_name) LIKE ?)")
-            params.extend([f"%{cat}%", f"%{cat}%", f"%{cat}%"])
-            
-        cat_clause = "(" + " OR ".join(cat_conditions) + ")"
-        
-        conditions = [cat_clause, "LOWER(city) LIKE ?"]
-        params.append(f"%{city}%")
-        
+        if category:
+            categories = [c.strip() for c in category.split(" and ")]
+            cat_conditions = []
+            for cat in categories:
+                cat_conditions.append("(LOWER(business_category) LIKE ? OR LOWER(subcategory) LIKE ? OR LOWER(business_name) LIKE ?)")
+                params.extend([f"%{cat}%", f"%{cat}%", f"%{cat}%"])
+            conditions.append("(" + " OR ".join(cat_conditions) + ")")
+        if city and city.lower() != "india":
+            conditions.append("LOWER(city) LIKE ?")
+            params.append(f"%{city}%")
         if area:
             conditions.append("REPLACE(LOWER(area), ' ', '') LIKE ?")
             params.append(f"%{area.lower().replace(' ', '').strip()}%")
         if min_rating:
             conditions.append("ratings >= ?")
             params.append(float(min_rating))
-            
+        if filters:
+            if filters.get("veg"):
+                conditions.append("(LOWER(business_name) LIKE ? OR LOWER(subcategory) LIKE ? OR LOWER(business_description) LIKE ?)")
+                params.extend(["%veg%", "%veg%", "%veg%"])
+            if filters.get("24x7"):
+                conditions.append("(LOWER(opening_hours) LIKE ? OR LOWER(subcategory) LIKE ?)")
+                params.extend(["%24 hours%", "%24x7%"])
+            if filters.get("parking"):
+                conditions.append("(LOWER(business_description) LIKE ? OR LOWER(subcategory) LIKE ?)")
+                params.extend(["%parking%", "%valet%"])
+            if filters.get("wheelchair"):
+                conditions.append("(LOWER(business_description) LIKE ?)")
+                params.append("%wheelchair%")
+            if filters.get("family"):
+                conditions.append("(LOWER(business_description) LIKE ? OR LOWER(subcategory) LIKE ?)")
+                params.extend(["%family%", "%kids%"])
+                
         where_clause = " AND ".join(conditions)
-        query_sql = f"""
-            SELECT COUNT(*)
-            FROM g_map_master_table
-            WHERE {where_clause}
-        """
+        if where_clause:
+            query_sql = f"SELECT COUNT(*) FROM g_map_master_table WHERE {where_clause}"
+        else:
+            query_sql = "SELECT COUNT(*) FROM g_map_master_table"
         cur.execute(query_sql, params)
         count = cur.fetchone()[0]
         return count
@@ -1256,10 +1359,73 @@ def generate_category_suggestions(category: str, city: str) -> list:
         })
     return output
 
+class SearchCache:
+    def __init__(self, ttl_seconds=600):
+        self.cache = {}
+        self.ttl = ttl_seconds
+        self.lock = threading.Lock()
+
+    def _normalize_key(self, query: str, lang: str) -> str:
+        q = query.lower().strip()
+        q = re.sub(r'[^\w\s]', '', q)
+        q = " ".join(q.split())
+        return f"{q}:{lang}"
+
+    def get(self, query: str, lang: str):
+        key = self._normalize_key(query, lang)
+        with self.lock:
+            if key in self.cache:
+                val, timestamp = self.cache[key]
+                if time.time() - timestamp < self.ttl:
+                    return val
+                else:
+                    del self.cache[key]
+        return None
+
+    def set(self, query: str, lang: str, value):
+        key = self._normalize_key(query, lang)
+        with self.lock:
+            self.cache[key] = (value, time.time())
+
+search_cache = SearchCache()
+
+async def compare_businesses_ai(biz1: dict, biz2: dict, lang: str):
+    prompt = f"""
+Compare the following two local businesses side-by-side:
+Business 1: {json.dumps(biz1, indent=2)}
+Business 2: {json.dumps(biz2, indent=2)}
+
+Your Task:
+Provide a clear side-by-side comparison summary. Contrast their rating, review counts, subcategory/services, hours, and addresses.
+Give a direct recommendation on which one to choose based on customer ratings and details.
+Translate the comparison and recommendation into language code '{lang}'.
+Return only the comparison text in standard markdown.
+"""
+    try:
+        from llm_client import call_llm
+        res = await anyio.to_thread.run_sync(
+            call_llm, 
+            [{"role": "user", "content": prompt}], 
+            "google/gemini-2.5-flash", 
+            2, 
+            1500
+        )
+        return res.get("content", "").strip()
+    except Exception as e:
+        return f"Comparison summary for {biz1.get('business_name')} and {biz2.get('business_name')}."
+
 @app.post("/api/query")
 async def search(req: SearchRequest):
     try:
-        from assistant_manager import classify_intent, get_greeting_response, is_greeting, get_guidance, get_assistant_response, parse_query_nlu
+        from assistant_manager import (
+            parse_query_nlu, 
+            generate_conversational_summary_and_chips, 
+            get_ai_conversational_response,
+            get_guidance,
+            is_greeting,
+            get_greeting_response
+        )
+        
         # --- PROMPT INJECTION CHECK ---
         if check_prompt_injection(req.query):
             resp = {"type": "faq", "data": "Safety check failed. Please submit a valid query."}
@@ -1271,127 +1437,108 @@ async def search(req: SearchRequest):
         session_phone = req.session.get("phone") if req.session else None
         session_email = req.session.get("email") if req.session else None
         lang = req.language or "en"
-        chat_session_id = req.session_id  # May be None for old clients
+        chat_session_id = req.session_id
 
-        # --- STATEFUL SEARCH PAGINATION & FILTERS REWRITER ---
-        # Default parameters
-        current_offset = 0
-        current_limit = 10
-        active_area = None
-        active_min_rating = None
-        
-        # Retrieve search context from last assistant message metadata
-        metadata = None
+        # --- Normalised Query Cache Check ---
+        cached_val = search_cache.get(req.query, lang)
+        if cached_val:
+            print(f"[CACHE] Hit cache for query '{req.query}'")
+            if chat_session_id:
+                _save_chat_message(chat_session_id, "user", req.query)
+                _save_chat_message(chat_session_id, "assistant", json.dumps(cached_val))
+            return cached_val
+
+        # --- Save User Message to History ---
         if chat_session_id:
-            metadata = _get_last_search_metadata(chat_session_id)
-            
-        # Detect follow-up search actions
-        is_next = q_lower in ["next", "show next 10 results", "show next 5 results", "next 5", "next 10", "next 5 results", "next 10 results", "show next 10", "next results", "next option", "more", "/next"]
-        is_prev = q_lower in ["prev", "previous", "previous results", "show previous 10 results", "show previous 5 results", "previous 5 results", "/prev"]
-        is_filter_rating = q_lower.startswith("filter by rating:")
-        is_filter_area = q_lower.startswith("filter by area:")
-        is_show_nearby = q_lower in ["show nearby", "nearby", "near me"]
-        is_search_another = q_lower in ["search another location", "search another city"]
-        is_clear_rating = q_lower in ["filter by rating: all", "filter by rating: none", "clear rating"]
-        is_clear_area = q_lower in ["filter by area: all", "filter by area: none", "clear area"]
-        
-        is_fast_follow_up = is_next or is_prev or is_filter_rating or is_filter_area or is_show_nearby or is_search_another or is_clear_rating or is_clear_area
-        
-        rewritten_metadata = None
-        if metadata:
-            if is_fast_follow_up:
-                rewritten_metadata = metadata.copy()
-                if is_next:
-                    page_inc = 5 if "5" in q_lower else 10
-                    prev_limit = metadata.get("limit", 10)
-                    rewritten_metadata["offset"] = metadata.get("offset", 0) + prev_limit
-                    rewritten_metadata["limit"] = page_inc
-                elif is_prev:
-                    page_dec = 5 if "5" in q_lower or metadata.get("limit") == 5 else 10
-                    rewritten_metadata["offset"] = max(0, metadata.get("offset", 0) - page_dec)
-                    rewritten_metadata["limit"] = page_dec
-                elif is_filter_rating:
-                    rating_str = q_lower.replace("filter by rating:", "").replace("+", "").strip()
-                    try:
-                        rewritten_metadata["min_rating"] = float(rating_str)
-                    except:
-                        rewritten_metadata["min_rating"] = None
-                    rewritten_metadata["offset"] = 0
-                elif is_clear_rating:
-                    rewritten_metadata["min_rating"] = None
-                    rewritten_metadata["offset"] = 0
-                elif is_filter_area:
-                    area_str = q_lower.replace("filter by area:", "").strip()
-                    rewritten_metadata["area"] = area_str if area_str and area_str != "all" else None
-                    rewritten_metadata["offset"] = 0
-                elif is_clear_area:
-                    rewritten_metadata["area"] = None
-                    rewritten_metadata["offset"] = 0
-                elif is_show_nearby:
-                    if req.session and req.session.get("area"):
-                        rewritten_metadata["area"] = req.session.get("area")
-                    rewritten_metadata["offset"] = 0
-                
-                category = rewritten_metadata.get("category")
-                city = rewritten_metadata.get("city")
-                current_offset = rewritten_metadata.get("offset", 0)
-                current_limit = rewritten_metadata.get("limit", 10)
-                active_area = rewritten_metadata.get("area")
-                active_min_rating = rewritten_metadata.get("min_rating")
-                
-                original_query = f"{category} in {city}"
-                req.query = original_query
-                q_lower = original_query.lower().strip()
-                print(f"[FOLLOW-UP SEARCH] Fast Action resolved: '{req.query}', Offset: {current_offset}, Limit: {current_limit}, Area: {active_area}, Rating: {active_min_rating}")
-            else:
-                # Try LLM context rewriter for natural language follow-ups
-                rewritten_metadata = await rewrite_query_with_context(req.query, metadata)
-                if rewritten_metadata:
-                    category = rewritten_metadata.get("category")
-                    city = rewritten_metadata.get("city")
-                    current_offset = rewritten_metadata.get("offset", 0)
-                    current_limit = rewritten_metadata.get("limit", 10)
-                    active_area = rewritten_metadata.get("area")
-                    active_min_rating = rewritten_metadata.get("min_rating")
-                    
-                    original_query = f"{category} in {city}"
-                    req.query = original_query
-                    q_lower = original_query.lower().strip()
-                    print(f"[REWRITER] Natural language follow-up rewritten: {rewritten_metadata}")
-                else:
-                    original_query = req.query
-        else:
-            original_query = req.query
-        # --- MEMORY: Save user message & load history ---
-        if chat_session_id:
-            _save_chat_message(chat_session_id, "user", original_query)
-            _update_session_title(chat_session_id, original_query)
+            _save_chat_message(chat_session_id, "user", req.query)
+            _update_session_title(chat_session_id, req.query)
             chat_history = _get_recent_history(chat_session_id, limit=10)
         else:
             chat_history = []
 
-        # --- NLU GATES (CLARIFICATION & CONFIDENCE) ---
-        nlu = await anyio.to_thread.run_sync(parse_query_nlu, req.query, lang)
-        if nlu.get("need_clarification") and nlu.get("clarification_message"):
-            quick_replies = nlu.get("quick_replies", [])
-            suggs = [{"title": qr, "action": "suggestion", "query": qr} for qr in quick_replies]
+        # --- NLU Classification & Multi-turn Resolution ---
+        nlu = await anyio.to_thread.run_sync(parse_query_nlu, req.query, lang, chat_history)
+        intents = nlu.get("intents", ["Unknown"])
+        primary_intent = intents[0] if intents else "Unknown"
+        entities = nlu.get("entities", {})
+        
+        # Determine if we should force business search intent
+        business_search_keywords = [
+            "restaurant", "hotel", "hospital", "gym", "salon", "school", "cafe", "shop", 
+            "doctor", "clinic", "food", "dining", "spa", "boutique", "fitness", "dentist",
+            "bakery", "service", "lawyer", "advocate", "mechanic", "plumber"
+        ]
+        ranking_keywords = [
+            "best", "top", "highest rated", "highest-rated", "top 5", "top 10", 
+            "most reviewed", "most-reviewed", "reviews", "popular"
+        ]
+        
+        has_biz_keyword = any(k in q_lower for k in business_search_keywords)
+        has_rank_keyword = any(k in q_lower for k in ranking_keywords)
+        has_cache_cat = any(cat.lower() in q_lower for cat in CATEGORIES_CACHE)
+        
+        is_forced_search = has_biz_keyword or has_rank_keyword or has_cache_cat
+        
+        if is_forced_search:
+            primary_intent = "Business Search"
+            print(f"[OVERRIDE] Forced intent to Business Search due to keywords/categories.")
+            
+        print(f"[NLU] Intent: {primary_intent}, Entities: {entities}")
+
+        # --- Intent: Greeting, Help, or General Conversation ---
+        if primary_intent in ["Greeting", "Help", "General AI Question"] or is_greeting(req.query):
+            ai_resp = await anyio.to_thread.run_sync(get_ai_conversational_response, req.query, lang, chat_history)
             resp = {
-                "type": "faq", 
-                "data": nlu["clarification_message"],
-                "suggestions": suggs
+                "type": "faq",
+                "data": ai_resp.get("response", ""),
+                "suggestions": [{"title": s, "action": "query_rewrite", "query": s} for s in ai_resp.get("suggestions", [])]
             }
             if chat_session_id:
                 _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
             return resp
 
-        # --- 1. MANDATORY AUTH CHECK for MY BUSINESS actions (Must run FIRST) ---
+        # --- Intent: Business Addition Save Confirmation ---
+        if primary_intent == "Business Addition" or q_lower in ["save this business", "yes save it", "yes, save it! 📥"]:
+            # Retrieve pending business from last message's search metadata
+            metadata = None
+            if chat_session_id:
+                metadata = _get_last_search_metadata(chat_session_id)
+            
+            pending = metadata.get("pending_save_business") if metadata else None
+            if pending:
+                # Insert the pending business
+                with db_context() as conn:
+                    cur = conn.cursor()
+                    insert_new_business(cur, pending)
+                    conn.commit()
+                resp = {
+                    "type": "faq",
+                    "data": f"✅ Successfully saved **{pending.get('business_name')}** to our directory! It is now fully enriched and available for future searches.",
+                    "suggestions": [
+                        {"title": "Search again 🔍", "action": "query_rewrite", "query": "Find businesses"},
+                        {"title": f"Show details of {pending.get('business_name')} 🏢", "action": "query_rewrite", "query": f"details of {pending.get('business_name')}"}
+                    ]
+                }
+                if chat_session_id:
+                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+                return resp
+            else:
+                resp = {
+                    "type": "faq",
+                    "data": "I couldn't find a pending business to add. What category or location would you like to search for?",
+                    "suggestions": [{"title": "Search Restaurants 🍕", "action": "query_rewrite", "query": "Restaurants"}]
+                }
+                if chat_session_id:
+                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+                return resp
+
+        # --- Mandatory Auth Check for MY BUSINESS actions ---
         is_my_biz_query = any(x in q_lower for x in [
             "show my business", "show business", "my business",
             "update my business", "update business",
             "manage product", "manage products",
             "manage deal", "manage deals"
         ])
-
         if is_my_biz_query:
             if not session_phone and not session_email:
                 resp = {"type": "faq", "data": "Please login with your mobile number or email to manage your business profile. Click 'Login' at the top!"}
@@ -1399,13 +1546,9 @@ async def search(req: SearchRequest):
                     _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
                 return resp
 
-            from business_by_phone import normalize_phone, get_businesses_by_phone, get_businesses_by_email
+            from business_by_phone import get_businesses_by_phone, get_businesses_by_email
             try:
-                if session_phone:
-                    raw_matches = get_businesses_by_phone(session_phone)
-                else:
-                    raw_matches = get_businesses_by_email(session_email)
-                    
+                raw_matches = get_businesses_by_phone(session_phone) if session_phone else get_businesses_by_email(session_email)
                 if not raw_matches:
                     resp = {"type": "faq", "data": "I couldn't find a business registered with your credentials."}
                     if chat_session_id:
@@ -1414,7 +1557,7 @@ async def search(req: SearchRequest):
                 
                 biz_row = raw_matches[0]
                 results = map_business_fields([biz_row])
-                                # CASE 1: MANAGE PRODUCTS
+                
                 if "manage product" in q_lower or "show product" in q_lower:
                     with db_context() as conn:
                         cur = conn.cursor()
@@ -1427,8 +1570,6 @@ async def search(req: SearchRequest):
                     if chat_session_id:
                         _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
                     return resp
-
-                # CASE 2: MANAGE DEALS
                 elif "manage deal" in q_lower or "show deal" in q_lower:
                     with db_context() as conn:
                         cur = conn.cursor()
@@ -1441,11 +1582,8 @@ async def search(req: SearchRequest):
                     if chat_session_id:
                         _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
                     return resp
-
-                # CASE 3: SHOW BUSINESS PROFILE
                 elif "show" in q_lower:
-                    biz = raw_matches[0]
-                    mapped = map_business_fields([biz])[0]
+                    mapped = map_business_fields([biz_row])[0]
                     fields = [
                         ("name", "Business Name"), ("category", "Category"),
                         ("phone_number", "Phone"), ("address", "Address"),
@@ -1454,7 +1592,7 @@ async def search(req: SearchRequest):
                     ]
                     suggs = []
                     for fk, fn in fields:
-                        val = biz.get(fk)
+                        val = biz_row.get(fk)
                         is_miss = not val or str(val).strip().lower() in ["none", "", "null", "not available"]
                         suggs.append({
                             "field": fk,
@@ -1474,38 +1612,33 @@ async def search(req: SearchRequest):
                     if chat_session_id:
                         _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
                     return resp
-                
-                # CASE 4: UPDATE BUSINESS PROFILE
                 elif "update" in q_lower:
-                    biz = raw_matches[0]
-                    t = lambda k: lang_fetch(k, lang)
                     fields = [
-                        ("name", t("name")), ("category", t("category")), 
-                        ("phone_number", t("phone_number")), ("address", t("address")), 
-                        ("area", t("area")), ("city", t("city")), 
-                        ("state", t("state")), ("website", t("website"))
+                        ("name", lang_fetch("name", lang)), ("category", lang_fetch("category", lang)), 
+                        ("phone_number", lang_fetch("phone_number", lang)), ("address", lang_fetch("address", lang)), 
+                        ("area", lang_fetch("area", lang)), ("city", lang_fetch("city", lang)), 
+                        ("state", lang_fetch("state", lang)), ("website", lang_fetch("website", lang))
                     ]
                     suggs = []
                     for fk, fn in fields:
-                        val = biz.get(fk)
+                        val = biz_row.get(fk)
                         is_miss = not val or str(val).strip().lower() in ["none", "", "null", "not available"]
                         suggs.append({
                             "field": fk,
-                            "title": f"{t('update_label')} {fn}",
-                            "reason": f"{fn} {t('missing_reason')}" if is_miss else f"{t('change_reason')} {fn}.",
+                            "title": f"{lang_fetch('update_label', lang)} {fn}",
+                            "reason": f"{fn} {lang_fetch('missing_reason', lang)}" if is_miss else f"{lang_fetch('change_reason', lang)} {fn}.",
                             "action": f"Update {fn}",
                             "is_missing": is_miss
                         })
                     suggs.sort(key=lambda x: not x["is_missing"])
-                    resp = {"type": "suggestions", "intro": t("update_prompt"), "content": suggs}
+                    resp = {"type": "suggestions", "intro": lang_fetch("update_prompt", lang), "content": suggs}
                     if chat_session_id:
                         _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
                     return resp
             except Exception as e:
-                print(f"Error in Auth Fast-path: {e}")
                 return {"type": "faq", "data": "I had trouble finding your business. Please ensure you are logged in."}
 
-        # --- 2. QUICK COMMAND SHORTCUTS ---
+        # --- Legacy Quick Command Shortcuts ---
         cmd_map = {
             "add product": "start_add_product",
             "add deal": "start_add_deal",
@@ -1517,87 +1650,267 @@ async def search(req: SearchRequest):
         if q_lower in cmd_map:
             return {"type": "command", "command": cmd_map[q_lower]}
 
-        # --- 3. GREETINGS (0ms Response Time) ---
-        if is_greeting(req.query):
-            resp = {"type": "faq", "data": await anyio.to_thread.run_sync(get_greeting_response, lang)}
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
+        # --- Intent: Comparison ---
+        if primary_intent == "Comparison" or "compare" in q_lower:
+            biz_names = re.split(r'\band\b|\bvs\b|,', q_lower.replace("compare", ""))
+            biz_names = [n.strip() for n in biz_names if n.strip()]
+            
+            matched_listings = []
+            with db_context() as conn:
+                cur = conn.cursor()
+                for name in biz_names[:3]: # Compare up to 3
+                    cur.execute("SELECT * FROM g_map_master_table WHERE LOWER(business_name) LIKE ? LIMIT 1", (f"%{name}%",))
+                    row = cur.fetchone()
+                    if row:
+                        matched_listings.append(dict(row))
+                        
+            if len(matched_listings) >= 2:
+                mapped = map_business_fields(matched_listings)
+                intro_ai = await compare_businesses_ai(mapped[0], mapped[1], lang)
+                resp = {
+                    "type": "database",
+                    "data": mapped,
+                    "intro": intro_ai,
+                    "prompt": "Here is the side-by-side comparison. Let me know if you want to look for details or reviews.",
+                    "suggestions": [
+                        {"title": f"Show {mapped[0]['business_name']} Reviews ⭐", "action": "query_rewrite", "query": f"reviews of {mapped[0]['business_name']}"},
+                        {"title": f"Show {mapped[1]['business_name']} Reviews ⭐", "action": "query_rewrite", "query": f"reviews of {mapped[1]['business_name']}"}
+                    ]
+                }
+                if chat_session_id:
+                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+                return resp
+            else:
+                resp = {
+                    "type": "faq",
+                    "data": "I couldn't find the businesses you'd like to compare. Make sure their names are written clearly (e.g., 'Compare Apollo and Medanta').",
+                    "suggestions": [{"title": "Try another search 🔍", "action": "query_rewrite", "query": "Compare Gold's Gym and Anytime Fitness"}]
+                }
+                if chat_session_id:
+                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+                return resp
 
-        # --- 4. FAST SEARCH PATH (Response time < 50ms) ---
-        category, city, extracted_area = extract_search_params(q_lower)
+        # --- Intent: Business Details, Website, or Contact ---
+        if primary_intent in ["Business Details", "Business Contact", "Business Website"] or any(k in q_lower for k in ["website of", "phone of", "details of"]):
+            biz_name_candidate = q_lower.replace("website of", "").replace("phone of", "").replace("details of", "").replace("contact of", "").strip()
+            # Clean up
+            biz_name_candidate = re.sub(r'\b(what is the|show the|find the)\b', '', biz_name_candidate).strip()
+            
+            with db_context() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM g_map_master_table WHERE LOWER(business_name) LIKE ? LIMIT 1", (f"%{biz_name_candidate}%",))
+                row = cur.fetchone()
+                
+            if row:
+                mapped = map_business_fields([dict(row)])[0]
+                val_detail = ""
+                if primary_intent == "Business Website":
+                    val_detail = f"The official website for **{mapped['business_name']}** is: {mapped['website_url'] or 'Not Available'}"
+                elif primary_intent == "Business Contact":
+                    val_detail = f"The phone number for **{mapped['business_name']}** is: {mapped['phone_number'] or 'Not Available'}"
+                else:
+                    val_detail = f"Here are the details for **{mapped['business_name']}** in {mapped['city']}: {mapped['business_description'] or 'A verified business listing.'}"
+
+                resp = {
+                    "type": "database",
+                    "data": [mapped],
+                    "intro": val_detail,
+                    "prompt": "You can use the card buttons to call, get directions, visit their website, or leave a review.",
+                    "suggestions": [
+                        {"title": f"Check Reviews ⭐", "action": "query_rewrite", "query": f"reviews of {mapped['business_name']}"},
+                        {"title": f"Compare with others ⚖️", "action": "query_rewrite", "query": f"Compare {mapped['business_name']} and Anytime Fitness"}
+                    ]
+                }
+                if chat_session_id:
+                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+                return resp
+
+        # --- Hybrid Business Search Flow (Primary Path) ---
+        category = entities.get("category")
+        city = entities.get("location", {}).get("city")
+        extracted_area = entities.get("location", {}).get("area")
+        ranking = entities.get("ranking")
+        filters = entities.get("filters", {})
         
-        # Context-aware carryover:
-        # 1. If category is missing but city is found, and we have a previous category in metadata, carry it over.
-        if not category and city and metadata and metadata.get("category"):
-            category = metadata.get("category")
+        # Manual parameter extraction fallback for forced searches
+        business_search_keywords_list = [
+            "restaurant", "hotel", "hospital", "gym", "salon", "school", "cafe", "shop", 
+            "doctor", "clinic", "food", "dining", "spa", "boutique", "fitness", "dentist",
+            "bakery", "service", "lawyer", "advocate", "mechanic", "plumber"
+        ]
+        
+        if not category:
+            # Look up categories cache
+            for cat in sorted(CATEGORIES_CACHE, key=len, reverse=True):
+                if cat.lower() in q_lower:
+                    category = cat
+                    break
+            # Fallback to business keywords if cache has no match
+            if not category:
+                for k in business_search_keywords_list:
+                    if k in q_lower:
+                        category = k.capitalize()
+                        break
+                        
+        # Check if India-wide search is explicitly mentioned
+        is_india_wide = "india" in q_lower or (entities.get("location", {}).get("country") and entities.get("location", {}).get("country").lower() == "india")
+        if is_india_wide:
+            city = "india"
             
-        # 2. If category is found but city is missing, and we have a previous city in metadata, carry it over.
-        if category and not city and metadata and metadata.get("city"):
-            city = metadata.get("city")
+        # Extract city and area manually if NLU missed it
+        if city != "india" and not city:
+            for c in sorted(CITIES_CACHE, key=len, reverse=True):
+                if c.lower() in q_lower:
+                    city = c
+                    break
+                    
+        if not extracted_area:
+            for a in sorted(AREAS_CACHE, key=len, reverse=True):
+                if a.lower().replace(" ", "") in q_lower.replace(" ", ""):
+                    extracted_area = a
+                    break
+        
+        # Context carrying over
+        last_meta = None
+        if chat_session_id:
+            last_meta = _get_last_search_metadata(chat_session_id)
+            
+        if not category and last_meta and last_meta.get("category"):
+            category = last_meta.get("category")
+        if not city and last_meta and last_meta.get("city"):
+            city = last_meta.get("city")
+        if not extracted_area and last_meta and last_meta.get("area"):
+            extracted_area = last_meta.get("area")
 
-        # Verify it's a real search query, not a conversational question containing a category
-        if category and not is_conversational_question(req.query):
-            # Fallback city if not found in query
-            if not city:
-                if session_phone or session_email:
+        # Normalize generic category words to None (to search all categories)
+        if category and category.lower() in ["business", "businesses", "general", "all", "any"]:
+            category = None
+
+        # Offset / limit
+        current_limit = entities.get("limit") or 10
+        current_offset = 0
+        if last_meta:
+            is_next = q_lower in ["next", "show more", "next results", "show next 10 results", "show next 5 results", "next 5", "next 10", "next 5 results", "next 10 results", "show next 10", "next option", "more", "/next"]
+            is_prev = q_lower in ["prev", "previous", "previous results", "show previous 10 results", "show previous 5 results", "previous 5 results", "/prev"]
+            limit_val = last_meta.get("limit") or current_limit
+            if is_next:
+                current_offset = last_meta.get("offset", 0) + limit_val
+                current_limit = limit_val
+            elif is_prev:
+                current_offset = max(0, last_meta.get("offset", 0) - limit_val)
+                current_limit = limit_val
+
+        # Fallback city
+        if not city:
+            if session_phone or session_email:
+                try:
                     from business_by_phone import get_businesses_by_phone, get_businesses_by_email
-                    try:
-                        ub = get_businesses_by_phone(session_phone) if session_phone else get_businesses_by_email(session_email)
-                        if ub:
-                            city = ub[0].get("city", "").lower()
-                    except:
-                        pass
-                if not city:
-                    try:
-                        conn = sqlite3.connect(DATABASE_URL)
-                        cur = conn.cursor()
-                        cur.execute("SELECT city, COUNT(*) as cnt FROM g_map_master_table WHERE city != '' GROUP BY city ORDER BY cnt DESC LIMIT 1")
-                        r = cur.fetchone()
-                        city = r[0].lower() if r else "surat"
-                        conn.close()
-                    except:
-                        city = "surat"
+                    ub = get_businesses_by_phone(session_phone) if session_phone else get_businesses_by_email(session_email)
+                    if ub: city = ub[0].get("city", "").lower()
+                except:
+                    pass
+            if not city:
+                try:
+                    conn = sqlite3.connect(DATABASE_URL)
+                    cur = conn.cursor()
+                    cur.execute("SELECT city, COUNT(*) as cnt FROM g_map_master_table WHERE city != '' GROUP BY city ORDER BY cnt DESC LIMIT 1")
+                    r = cur.fetchone()
+                    city = r[0].lower() if r else "surat"
+                    conn.close()
+                except:
+                    city = "surat"
 
-            # For new searches (not fast follow-ups or rewritten follow-ups), apply the extracted area as active_area
-            if not is_fast_follow_up and not rewritten_metadata:
-                active_area = extracted_area
-                current_limit = 10  # reset page size for a brand new search
+        # Map ranking/intent
+        ranking_map = {
+            "Budget Search": "budget",
+            "Luxury Search": "luxury",
+            "Highest Rated": "highest_rated",
+            "Most Reviewed": "most_reviewed",
+            "Recently Added": "newest",
+            "Trending": "trending"
+        }
+        resolved_ranking = ranking or ranking_map.get(primary_intent)
 
-            print(f"[FAST SEARCH] Category: '{category}', City: '{city}', Offset: {current_offset}, Limit: {current_limit}, Area: {active_area}, Rating: {active_min_rating}")
+        # Check Category Search
+        if category or primary_intent == "Business Search":
+            print(f"[HYBRID SEARCH] Database First. Querying: category={category}, city={city}, area={extracted_area}")
             
-            # Query SQLite local DB with active pagination, limit, and filters
-            results = query_local_businesses(category, city, offset=current_offset, limit=current_limit, area=active_area, min_rating=active_min_rating)
+            # Step 1: Database First Search
+            results = query_local_businesses(
+                category=category, 
+                city=city, 
+                area=extracted_area, 
+                min_rating=None, 
+                open_only=filters.get("open_now", False), 
+                filters=filters, 
+                ranking_intent=resolved_ranking,
+                offset=current_offset, 
+                limit=current_limit
+            )
             
-            # Trigger online scraping on page 0 if < 3 results or explicit online search requested
+            # Step 2: Enough Quality Results Check?
             explicit_online = any(w in q_lower for w in ["online", "live", "web", "scrape", "internet", "google", "find online", "search online", "latest", "current", "real-time", "real time"])
+            
+            # If results are insufficient (< 3 results) or explicit online request on page 0:
             if (len(results) < 3 or explicit_online) and current_offset == 0:
                 try:
                     from search_online import search_online_and_save
-                    if active_area:
-                        scrape_query = f"{category} in {active_area}, {city}"
-                    else:
-                        scrape_query = f"{category} in {city}"
-                    print(f"[FAST SEARCH] Scraped online search for '{scrape_query}' (results count: {len(results)}, explicit: {explicit_online})")
-                    online_results = await anyio.to_thread.run_sync(search_online_and_save, scrape_query)
+                    search_term = category if category else "best businesses"
+                    scrape_q = f"{search_term} in {extracted_area + ', ' if extracted_area else ''}{city}"
+                    print(f"[HYBRID SEARCH] Results insufficient ({len(results)} matches). Triggering provider scraping for: '{scrape_q}'")
+                    
+                    # Search Online & validate & enrich & insert/update in Provider Layer
+                    online_results = await anyio.to_thread.run_sync(search_online_and_save, scrape_q)
+                    
                     if online_results:
                         load_cities_and_categories_cache()
-                        results = query_local_businesses(category, city, offset=current_offset, limit=current_limit, area=active_area, min_rating=active_min_rating)
+                        # Re-run Database Search to include the newly ingested online records
+                        results = query_local_businesses(
+                            category=category, 
+                            city=city, 
+                            area=extracted_area, 
+                            min_rating=None, 
+                            open_only=filters.get("open_now", False), 
+                            filters=filters, 
+                            ranking_intent=resolved_ranking,
+                            offset=current_offset, 
+                            limit=current_limit
+                        )
                 except Exception as scraping_err:
-                    print(f"[FAST SEARCH] Scraping failed: {scraping_err}")
+                    print(f"[HYBRID SEARCH] Scraping failed: {scraping_err}")
 
             if results or current_offset > 0:
-                mapped_results = map_business_fields(results) if results else []
-                total_count = count_local_businesses(category, city, area=active_area, min_rating=active_min_rating)
+                mapped_results = map_business_fields(results)
+                total_count = count_local_businesses(category, city, area=extracted_area, filters=filters)
                 
-                # Build rich ChatGPT-style interactive suggestions
+                # Check if it was a single business details request but found online
+                # If scraping found exactly one business and user searched specifically for a name
+                # Prompt to save / addition logic
+                pending_save = None
+                if len(mapped_results) == 1 and not results[0].get("owner_id") and explicit_online:
+                    # Keep this business pending addition
+                    pending_save = results[0]
+
+                # Step 3: Call OpenRouter for Conversational summary & contextual suggestion chips
+                summary_data = await anyio.to_thread.run_sync(
+                    generate_conversational_summary_and_chips, 
+                    req.query, 
+                    mapped_results, 
+                    lang, 
+                    chat_history
+                )
+                
+                # Format Suggestions
                 suggestions = []
-                if total_count > current_offset + current_limit:
+                for s in summary_data.get("suggestions", []):
                     suggestions.append({
-                        "title": "Next 5 Results ⏭️",
-                        "action": "next_option",
-                        "query": "Show Next 5 Results"
+                        "title": s,
+                        "action": "query_rewrite",
+                        "query": s
                     })
+                    
+                # Standard pagination chips
+                if total_count > current_offset + current_limit:
                     suggestions.append({
                         "title": "Next 10 Results ⏭️",
                         "action": "next_option",
@@ -1609,158 +1922,56 @@ async def search(req: SearchRequest):
                         "action": "prev_option",
                         "query": "Previous Results"
                     })
-                
-                # Add area dynamic suggestion chips based on database presence
-                try:
-                    conn = sqlite3.connect(DATABASE_URL)
-                    cur = conn.cursor()
-                    cur.execute(
-                        "SELECT area, COUNT(*) as cnt FROM g_map_master_table WHERE LOWER(city) = ? AND (LOWER(business_category) LIKE ? OR LOWER(subcategory) LIKE ?) AND area != '' GROUP BY area ORDER BY cnt DESC LIMIT 3",
-                        (city.lower(), f"%{category}%", f"%{category}%")
-                    )
-                    top_areas = [r[0] for r in cur.fetchall()]
-                    conn.close()
-                    for ta in top_areas:
-                        if active_area and ta.lower() == active_area.lower():
-                            continue
-                        suggestions.append({
-                            "title": f"Area: {ta} 📍",
-                            "action": "filter_area",
-                            "query": f"Filter by Area: {ta}"
-                        })
-                except Exception as e:
-                    print(f"Error fetching top areas: {e}")
-                
-                # Add rating dynamic suggestion chips
-                if not active_min_rating or active_min_rating < 4.5:
-                    suggestions.append({
-                        "title": "Filter 4.5+ ⭐",
-                        "action": "filter_rating",
-                        "query": "Filter by Rating: 4.5+"
-                    })
-                elif active_min_rating == 4.5:
-                    suggestions.append({
-                        "title": "Clear Rating 🌟",
-                        "action": "clear_rating",
-                        "query": "Filter by Rating: All"
-                    })
-                # Add dynamic category and location follow-up suggestions
-                category_suggs = generate_category_suggestions(category, city)
-                suggestions.extend(category_suggs)
-
-                # Location switch chip
-                suggestions.append({
-                    "title": "Search Another City 🔍",
-                    "action": "search_another_city",
-                    "query": "Search Another Location"
-                })
-
-                # Embed search metadata in assistant response
+                    
                 search_meta = {
                     "category": category,
                     "city": city,
+                    "area": extracted_area,
                     "offset": current_offset,
                     "limit": current_limit,
-                    "area": active_area,
-                    "min_rating": active_min_rating
+                    "pending_save_business": pending_save
                 }
                 
-                filter_suffix = ""
-                if active_area:
-                    filter_suffix += f" in {active_area}"
-                if active_min_rating:
-                    filter_suffix += f" rated {active_min_rating}+ ⭐"
-
                 resp = {
                     "type": "database",
                     "data": mapped_results,
-                    "intro": f"Here are the {category}s in {city.capitalize()}{filter_suffix} (showing {current_offset + 1}-{min(current_offset + current_limit, total_count)} of {total_count}):",
-                    "prompt": f"Use the options below to paginate or filter listings:",
+                    "intro": summary_data.get("summary", ""),
+                    "prompt": "Use the options below to filter or compare listings:",
                     "suggestions": suggestions,
                     "search_metadata": search_meta
                 }
                 
-                # Log search history for analytics
+                # Log to history for Analytics
                 try:
                     conn = sqlite3.connect(DATABASE_URL)
                     cur = conn.cursor()
                     cur.execute("""
                         INSERT INTO search_history (user_id, search_query, resolved_city, resolved_category)
                         VALUES (?, ?, ?, ?)
-                    """, (get_current_user_id(session=req.session), original_query, city, category))
+                    """, (get_current_user_id(session=req.session), req.query, city, category))
                     conn.commit()
                     conn.close()
-                except Exception as e:
-                    print(f"Error logging search history: {e}")
-
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-        # --- 5. CONVERSATIONAL FALLBACK & AI FLOW ---
-        intent = nlu.get("intents", ["UNKNOWN"])[0]
-
-        if intent in ["FAQ", "FAST_RESULT"]:
-            from fast_result import fast_answer
-            resp = {"type": "faq", "data": fast_answer(req.query)}
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-            
-        if intent == "BUSINESS_UPDATE":
-            keywords = ["phone", "address", "name", "category", "website", "city", "state", "area"]
-            if any(f in q_lower for f in keywords):
-                resp = {"type": "faq", "data": await anyio.to_thread.run_sync(get_guidance, intent, req.query, lang)}
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-            return search(SearchRequest(query="update my business", session=req.session, language=lang, session_id=chat_session_id))
-
-        if intent in ["SEARCH_BUSINESS", "BUSINESS_STATUS", "TEXT_TO_SQL", "SUGGESTION"]:
-            explicit_online = any(w in q_lower for w in ["online", "live", "web", "scrape", "internet", "google", "find online", "search online", "latest", "current", "real-time", "real time"])
-            try:
-                from text_to_sql import generate_sql
-                sql = generate_sql(req.query)
-                if sql not in ["UNSAFE_QUERY", ""]:
-                    with db_context() as conn:
-                        cur = conn.cursor()
-                        cur.execute(sql)
-                        rows = [dict(r) for r in cur.fetchall()]
-                    print("SQL:", sql)
-                    print("RowsFound:", len(rows))
-                    if rows: return {"type": "database", "data": map_business_fields(rows), "intro": lang_fetch("found_results", lang)}
-            except Exception as e:
-                print("SQL ERROR:", e)
-    
-            if intent == "SEARCH_BUSINESS" or explicit_online:
-                try:
-                    from search_online import search_online_and_save
-                    online = await anyio.to_thread.run_sync(search_online_and_save, req.query)
-                    if online:
-                        resp = {
-                            "type": "database", 
-                            "data": map_business_fields(online), 
-                            "intro": lang_fetch("found_online", lang),
-                            "prompt": "Use the options below to paginate listings:",
-                            "suggestions": [
-                                {
-                                    "title": "Next 10 Results ⏭️",
-                                    "action": "next_option",
-                                    "query": "Show Next 10 Results"
-                                }
-                            ]
-                        }
-                        if chat_session_id:
-                            _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                        return resp
-                except:
+                except Exception as cache_err:
                     pass
 
-        # Call Gemini assistant response with cleaned context-aware conversation history
-        bot_reply = await anyio.to_thread.run_sync(get_assistant_response, req.query, "No results.", lang, chat_history)
-        resp = {"type": "faq", "data": bot_reply}
+                # Set Cache
+                search_cache.set(req.query, lang, resp)
+
+                if chat_session_id:
+                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+                return resp
+
+        # --- Fallback: Conversational AI Response ---
+        ai_resp = await anyio.to_thread.run_sync(get_ai_conversational_response, req.query, lang, chat_history)
+        resp = {
+            "type": "faq",
+            "data": ai_resp.get("response", ""),
+            "suggestions": [{"title": s, "action": "query_rewrite", "query": s} for s in ai_resp.get("suggestions", [])]
+        }
         if chat_session_id:
             _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
         return resp
+
     except Exception as e:
         print(f"[Search Query Error] {e}")
         raise HTTPException(400, str(e))
