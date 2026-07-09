@@ -23,7 +23,16 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
   const [showLoginPopup, setShowLoginPopup] = useState(false)
 
   const [localMessages, setLocalMessages] = useState([
-    { id: 'init', role: 'bot', type: 'text', content: UI_TRANSLATIONS.en.welcome }
+    {
+      id: 'init',
+      role: 'bot',
+      type: 'explore_welcome',
+      content: UI_TRANSLATIONS.en.welcome,
+      suggestions: [
+        { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
+        { title: '🛍️ Products', action: 'query_rewrite', query: 'explore products' }
+      ]
+    }
   ])
   const messagesEndRef = useRef(null)
 
@@ -71,8 +80,16 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
 
     if (localMessages.length <= 2 && localMessages.every(m => m.id === 'init' || m.id === 'hint')) {
       setLocalMessages([
-        { id: 'init', role: 'bot', type: 'text', content: trans.welcome || trans.welcome_message },
-        { id: 'hint', role: 'bot', type: 'text', content: hint }
+        {
+          id: 'init',
+          role: 'bot',
+          type: 'explore_welcome',
+          content: trans.welcome || trans.welcome_message,
+          suggestions: [
+            { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
+            { title: '🛍\uFE0F Products', action: 'query_rewrite', query: 'explore products' }
+          ]
+        }
       ])
     }
   }, [currentLanguage])
@@ -311,7 +328,10 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
         role: 'bot',
         type: responseType,
         content: data.data || data.content || fallbackResponse,
-        intro: data.intro
+        intro: data.intro,
+        suggestions: data.suggestions || [],
+        search_metadata: data.search_metadata || null,
+        context: data.context || null
       }])
 
     } catch (e) {
@@ -377,6 +397,16 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
     if (action === 'login_trigger') return setShowLoginPopup(true)
     if (action === 'cancel_sub_menu') return setQuickActionsView('welcome_screen')
 
+    // ── Suggestion Chip Actions (query_rewrite / pagination) ──────────────────
+    if (action === 'query_rewrite' || action === 'next_option' || action === 'prev_option' || action === 'set_city' || action === 'set_category') {
+      const queryText = typeof payload === 'string' ? payload : (payload?.query || payload);
+      if (!queryText) return;
+      // Show the chip label as a user message
+      await handleSend(null, queryText);
+      return;
+    }
+
+
     if (action === 'search_method') {
       setLocalMessages(prev => [...prev, { id: Date.now(), role: 'user', type: 'text', content: trans.btn_find }])
       setLocalMessages(prev => [...prev, {
@@ -438,10 +468,17 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
       }
 
       setShowResetConfirm(false)
-      const hint = trans.menu_hint || "💡 Note: Click the three-dot (⋮) menu at the top-right for more options.";
       setLocalMessages([
-        { id: 'init', role: 'bot', type: 'text', content: trans.chat_cleared || "Chat cleared!" },
-        { id: 'hint', role: 'bot', type: 'text', content: hint }
+        {
+          id: 'init',
+          role: 'bot',
+          type: 'explore_welcome',
+          content: trans.chat_cleared || '👋 Chat cleared. Welcome back!',
+          suggestions: [
+            { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
+            { title: '🛍️ Products', action: 'query_rewrite', query: 'explore products' }
+          ]
+        }
       ])
       setResetConfirmCount(0)
       setFlowMode('QUERY')
@@ -451,6 +488,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
       setCurrentSessionId(null)
       return
     }
+
 
     if (action !== 'reset_chat') setResetConfirmCount(0)
 

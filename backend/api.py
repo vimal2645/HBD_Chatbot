@@ -328,21 +328,6 @@ def lang_fetch(key, lang="en"):
         
     if not lang or lang == "en": return eng_val
     
-    # DYNAMIC TRANSLATION (Auto-Correction/Translation for 'all' languages)
-    try:
-        from llm_client import call_llm
-        from models import MODEL
-
-        prompt = f"Translate the following button label or UI text to language code '{lang}'. Return ONLY the translation. Text: '{eng_val}'"
-        res = call_llm([{"role": "user", "content": prompt}], model=MODEL)
-        translation = res.get("content", "").strip().replace("'", "").replace("\"", "")
-        if translation and len(translation) < 100:
-            if lang not in BACKEND_TRANSLATIONS: BACKEND_TRANSLATIONS[lang] = {}
-            BACKEND_TRANSLATIONS[lang][key] = translation
-            return translation
-    except Exception as e:
-        print(f"Translation Error for {lang}: {e}")
-    
     return eng_val
 
 # Table name constant
@@ -983,7 +968,11 @@ def extract_search_params(query_str: str):
     return found_category, found_city, found_area
 
 def _get_last_search_metadata(session_id: str):
-    """Retrieves the search_metadata dictionary from the last assistant database response in this session."""
+    """
+    Retrieves the search_metadata from the last relevant assistant message.
+    Checks BOTH 'database' and 'flow_step' type messages so the guided
+    conversation flow persists correctly across turns.
+    """
     if not session_id:
         return None
     try:
@@ -991,7 +980,7 @@ def _get_last_search_metadata(session_id: str):
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         cur.execute(
-            "SELECT content FROM chat_messages WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 10",
+            "SELECT content FROM chat_messages WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 15",
             (session_id,)
         )
         rows = cur.fetchall()
@@ -1000,8 +989,13 @@ def _get_last_search_metadata(session_id: str):
             content = r["content"]
             try:
                 data = json.loads(content)
-                if isinstance(data, dict) and data.get("type") == "database" and "search_metadata" in data:
-                    return data["search_metadata"]
+                if not isinstance(data, dict):
+                    continue
+                msg_type = data.get("type", "")
+                meta = data.get("search_metadata")
+                # Accept metadata from database results AND guided flow steps
+                if meta and msg_type in ("database", "database_products", "flow_step", "faq"):
+                    return meta
             except Exception:
                 continue
     except Exception as e:
@@ -1184,7 +1178,7 @@ def query_local_businesses(category: str, city: str, offset: int = 0, limit: int
             rows.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
         else:
             rows.sort(key=lambda x: x.get("search_score", 0.0), reverse=True)
-            
+
         return rows[offset:offset+limit]
 
 def count_local_businesses(category: str, city: str, area: str = None, min_rating: float = None, filters: dict = None):
@@ -1225,7 +1219,7 @@ def count_local_businesses(category: str, city: str, area: str = None, min_ratin
             if filters.get("family"):
                 conditions.append("(LOWER(description) LIKE %s OR LOWER(business_subcategory) LIKE %s)")
                 params.extend(["%family%", "%kids%"])
-                
+
         where_clause = " AND ".join(conditions)
         if where_clause:
             query_sql = f"SELECT COUNT(*) FROM master_table WHERE {where_clause}"
@@ -1236,70 +1230,117 @@ def count_local_businesses(category: str, city: str, area: str = None, min_ratin
         return count
 
 
-async def rewrite_query_with_context(user_query: str, last_metadata: dict) -> Optional[dict]:
-    """Uses the LLM to rewrite a query based on previous search context."""
+def rewrite_query_with_context(user_query: str, last_metadata: dict) -> Optional[dict]:
+    """
+    Rule-based context rewriter (LLM removed).
+    Detects follow-up patterns (pagination, area/rating filters, ranking adjustments)
+    and merges them with the last search context. Returns None for brand-new searches.
+    """
     if not last_metadata:
         return None
-        
-    prompt = f"""
-    The user is searching for local businesses on our platform.
-    Previous Search Context:
-    - Category: {last_metadata.get('category')}
-    - City: {last_metadata.get('city')}
-    - Area: {last_metadata.get('area')}
-    - Minimum Rating: {last_metadata.get('min_rating')}
-    - Current Page Offset: {last_metadata.get('offset', 0)}
-    
-    New User Input: "{user_query}"
-    
-    Task:
-    Determine if the new input is a follow-up question, filter adjustment, page navigation, or location refinement of the previous search.
-    Examples of follow-ups:
-    - "show more" or "next" -> offset should increase by 10
-    - "only near Navrangpura" -> area should be "Navrangpura", offset reset to 0
-    - "above 4.5 rating" or "4.5+ stars" -> min_rating should be 4.5, offset reset to 0
-    - "any in Kothrud?" -> area should be "Kothrud", offset reset to 0
-    - "previous page" or "go back" -> offset should decrease by 10 (min 0)
-    
-    If the new input is a follow-up, return a JSON object with the updated search parameters.
-    If the user has cleared a filter (e.g. "any rating" or "all areas"), set that field to null.
-    
-    Allowed JSON fields in the returned object:
-    - category (string)
-    - city (string)
-    - area (string or null)
-    - min_rating (float or null)
-    - offset (integer)
-    
-    If the input is a COMPLETELY NEW search (e.g. user previously searched for gyms and now wants pizza) or a general conversational question, return ONLY the word: null
-    
-    Respond ONLY with the JSON object or the word "null", without markdown blocks.
-    """
-    
-    try:
-        from llm_client import call_llm
-        response = await anyio.to_thread.run_sync(
-            call_llm, 
-            [{"role": "user", "content": prompt}], 
-            "google/gemini-2.5-flash-lite", 
-            2, 
-            150
-        )
-        content = response.get("content", "").strip()
-        if content.startswith("```"):
-            content = content.replace("```json", "").replace("```", "").strip()
-        if content.lower() == "null" or not content:
-            return None
-        
-        updated = json.loads(content)
-        if isinstance(updated, dict):
+
+    q = user_query.lower().strip()
+
+    # Detect pagination commands
+    next_triggers = [
+        "next", "more", "show more", "next results", "show next",
+        "next 10", "next 5", "next page", "next option",
+        "show next 10 results", "show next 5 results",
+    ]
+    prev_triggers = [
+        "prev", "previous", "go back", "previous results",
+        "previous page", "show previous",
+    ]
+
+    if any(t in q for t in next_triggers):
+        limit_val = last_metadata.get("limit", 10)
+        merged = last_metadata.copy()
+        merged["offset"] = last_metadata.get("offset", 0) + limit_val
+        print(f"[REWRITER] Next page detected -> offset={merged['offset']}")
+        return merged
+
+    if any(t in q for t in prev_triggers):
+        limit_val = last_metadata.get("limit", 10)
+        merged = last_metadata.copy()
+        merged["offset"] = max(0, last_metadata.get("offset", 0) - limit_val)
+        print(f"[REWRITER] Prev page detected -> offset={merged['offset']}")
+        return merged
+
+    # Detect rating filter adjustments
+    rating_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:\+|plus|star|stars|rating|rated)', q)
+    if rating_match:
+        try:
+            min_r = float(rating_match.group(1))
+            if 0 < min_r <= 5:
+                merged = last_metadata.copy()
+                merged["min_rating"] = min_r
+                merged["offset"] = 0
+                print(f"[REWRITER] Rating filter -> min_rating={min_r}")
+                return merged
+        except ValueError:
+            pass
+
+    # Detect area refinement
+    area_match = re.search(r'(?:near|in|at|around)\s+([a-z][a-z\s]{2,25}?)(?:\s*$|\?)', q)
+    if area_match:
+        area_candidate = area_match.group(1).strip()
+        known_area = None
+        for a in sorted(AREAS_CACHE, key=len, reverse=True):
+            if a and (a.lower() in area_candidate or area_candidate in a.lower()):
+                known_area = a
+                break
+        if known_area:
             merged = last_metadata.copy()
-            for k in ["category", "city", "area", "min_rating", "offset"]:
-                if k in updated:
-                    merged[k] = updated[k]
+            merged["area"] = known_area
+            merged["offset"] = 0
+            print(f"[REWRITER] Area refined -> area={known_area}")
             return merged
-    except Exception as e:
-        print(f"[REWRITER] Context rewrite error: {e}")
+
+    # Detect open-now filter
+    if any(w in q for w in ["open now", "open today", "currently open", "only open"]):
+        merged = last_metadata.copy()
+        merged["open_only"] = True
+        merged["offset"] = 0
+        print("[REWRITER] Open-now filter applied")
+        return merged
+
+    # Detect top-rated ranking
+    if any(w in q for w in ["top rated", "highest rated", "best rated"]):
+        if last_metadata.get("category") or last_metadata.get("city"):
+            merged = last_metadata.copy()
+            merged["ranking"] = "highest_rated"
+            merged["offset"] = 0
+            return merged
+
+    # Detect most-reviewed ranking
+    if any(w in q for w in ["most reviewed", "popular", "most popular"]):
+        if last_metadata.get("category") or last_metadata.get("city"):
+            merged = last_metadata.copy()
+            merged["ranking"] = "most_reviewed"
+            merged["offset"] = 0
+            return merged
+
+    # Detect budget filter
+    if any(w in q for w in ["budget", "cheap", "affordable"]):
+        merged = last_metadata.copy()
+        merged["ranking"] = "budget"
+        merged["offset"] = 0
+        return merged
+
+    # Detect luxury filter
+    if any(w in q for w in ["luxury", "premium", "5 star", "five star"]):
+        merged = last_metadata.copy()
+        merged["ranking"] = "luxury"
+        merged["offset"] = 0
+        return merged
+
+    # If query has new category or city — treat as new search
+    has_new_cat = any(cat.lower() in q for cat in CATEGORIES_CACHE if cat and len(cat) >= 4)
+    has_new_city = any(c.lower() in q for c in CITIES_CACHE if c and len(c) >= 4)
+    if has_new_cat or has_new_city:
+        return None
+
+    # No clear follow-up signal — treat as new search
     return None
 
 def generate_category_suggestions(category: str, city: str) -> list:
@@ -1414,693 +1455,81 @@ class SearchCache:
 search_cache = SearchCache()
 
 async def compare_businesses_ai(biz1: dict, biz2: dict, lang: str):
-    prompt = f"""
-Compare the following two local businesses side-by-side:
-Business 1: {json.dumps(biz1, indent=2)}
-Business 2: {json.dumps(biz2, indent=2)}
-
-Your Task:
-Provide a clear side-by-side comparison summary. Contrast their rating, review counts, subcategory/services, hours, and addresses.
-Give a direct recommendation on which one to choose based on customer ratings and details.
-Translate the comparison and recommendation into language code '{lang}'.
-Return only the comparison text in standard markdown.
-"""
+    name1 = biz1.get("business_name") or "Business 1"
+    name2 = biz2.get("business_name") or "Business 2"
+    
+    rating1 = biz1.get("rating") or biz1.get("stars") or "N/A"
+    rating2 = biz2.get("rating") or biz2.get("stars") or "N/A"
+    
+    reviews1 = biz1.get("review_count") or biz1.get("reviews") or 0
+    reviews2 = biz2.get("review_count") or biz2.get("reviews") or 0
+    
+    cat1 = biz1.get("business_category") or "N/A"
+    cat2 = biz2.get("business_category") or "N/A"
+    
+    city1 = biz1.get("city") or "N/A"
+    city2 = biz2.get("city") or "N/A"
+    
+    addr1 = biz1.get("address") or "N/A"
+    addr2 = biz2.get("address") or "N/A"
+    
+    phone1 = biz1.get("phone_number") or "N/A"
+    phone2 = biz2.get("phone_number") or "N/A"
+    
+    hours1 = biz1.get("working_hour") or biz1.get("opening_hours") or "N/A"
+    hours2 = biz2.get("working_hour") or biz2.get("opening_hours") or "N/A"
+    
+    # Recommendation logic
+    rec = ""
     try:
-        from llm_client import call_llm
-        res = await anyio.to_thread.run_sync(
-            call_llm, 
-            [{"role": "user", "content": prompt}], 
-            "google/gemini-2.5-flash", 
-            2, 
-            1500
-        )
-        return res.get("content", "").strip()
-    except Exception as e:
-        return f"Comparison summary for {biz1.get('business_name')} and {biz2.get('business_name')}."
+        r1 = float(rating1)
+        r2 = float(rating2)
+        if r1 > r2:
+            rec = f"🏆 **Recommendation**: We recommend **{name1}** as it has a higher rating of {r1} compared to {r2}."
+        elif r2 > r1:
+            rec = f"🏆 **Recommendation**: We recommend **{name2}** as it has a higher rating of {r2} compared to {r1}."
+        else:
+            v1 = int(reviews1)
+            v2 = int(reviews2)
+            if v1 > v2:
+                rec = f"🏆 **Recommendation**: Both have the same rating, but we recommend **{name1}** as it has more reviews ({v1} vs {v2})."
+            elif v2 > v1:
+                rec = f"🏆 **Recommendation**: Both have the same rating, but we recommend **{name2}** as it has more reviews ({v2} vs {v1})."
+            else:
+                rec = f"🏆 **Recommendation**: Both are excellent choices with matching ratings and reviews!"
+    except:
+        rec = f"🏆 **Recommendation**: Compare their locations and contact details below to make your choice."
+
+    comparison_md = f"""
+### 📊 Side-by-Side Comparison
+
+| Feature | {name1} | {name2} |
+| :--- | :--- | :--- |
+| **Category** | {cat1} | {cat2} |
+| **Rating** | ⭐ {rating1} | ⭐ {rating2} |
+| **Reviews Count** | 💬 {reviews1} | 💬 {reviews2} |
+| **City** | 📍 {city1} | 📍 {city2} |
+| **Address** | 🏠 {addr1} | 🏠 {addr2} |
+| **Phone** | 📞 {phone1} | 📞 {phone2} |
+| **Hours** | ⏰ {hours1} | ⏰ {hours2} |
+
+---
+
+{rec}
+"""
+    return comparison_md.strip()
 
 @app.post("/api/query")
 async def search(req: SearchRequest):
     try:
-        from assistant_manager import (
-            parse_query_nlu, 
-            generate_conversational_summary_and_chips, 
-            get_ai_conversational_response,
-            get_guidance,
-            is_greeting,
-            get_greeting_response
-        )
+        from chat_router import handle_chat_query
         
-        # --- PROMPT INJECTION CHECK ---
-        if check_prompt_injection(req.query):
-            resp = {"type": "faq", "data": "Safety check failed. Please submit a valid query."}
-            if req.session_id:
-                _save_chat_message(req.session_id, "assistant", json.dumps(resp))
-            return resp
-            
-        q_lower = req.query.lower().strip()
         session_phone = req.session.get("phone") if req.session else None
         session_email = req.session.get("email") if req.session else None
         lang = req.language or "en"
-        chat_session_id = req.session_id
-
-        # --- Normalised Query Cache Check ---
-        cached_val = search_cache.get(req.query, lang)
-        if cached_val:
-            print(f"[CACHE] Hit cache for query '{req.query}'")
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "user", req.query)
-                _save_chat_message(chat_session_id, "assistant", json.dumps(cached_val))
-            return cached_val
-
-        # --- Save User Message to History ---
-        if chat_session_id:
-            _save_chat_message(chat_session_id, "user", req.query)
-            _update_session_title(chat_session_id, req.query)
-            chat_history = _get_recent_history(chat_session_id, limit=10)
-        else:
-            chat_history = []
-
-        # --- RIGID CHATBOT FLOW INTERCEPTS (Direct MySQL Queries) ---
-        if q_lower in ["explore listings", "top rated businesses"]:
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                # Fetch Top Rated Businesses from master_table
-                cur.execute("SELECT * FROM master_table ORDER BY reviews_avg DESC LIMIT 5")
-                biz_results = cur.fetchall()
-                # Fetch categories for chips
-                cur.execute("SELECT category_name FROM Top_categories_rank ORDER BY category_rank ASC LIMIT 10")
-                cats = [row["category_name"] for row in cur.fetchall()]
-            
-            resp = {
-                "type": "database",
-                "data": map_business_fields(biz_results),
-                "intro": "Here are some of our top rated businesses:",
-                "suggestions": [{"title": c, "action": "query_rewrite", "query": c} for c in cats] + [{"title": "📍 Browse Locations", "action": "query_rewrite", "query": "Browse Locations"}]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        if q_lower in ["browse products", "trending products"]:
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                cur.execute("SELECT * FROM product_master WHERE stars IS NOT NULL ORDER BY stars DESC LIMIT 5")
-                prod_results = cur.fetchall()
-                cur.execute("SELECT DISTINCT category_name FROM product_master WHERE category_name IS NOT NULL LIMIT 8")
-                cats = [row["category_name"] for row in cur.fetchall()]
-            
-            resp = {
-                "type": "database_products",
-                "data": map_product_fields(prod_results),
-                "intro": "Here are some trending products available right now:",
-                "suggestions": [{"title": c, "action": "query_rewrite", "query": c} for c in cats]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        if q_lower == "browse categories":
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                cur.execute("SELECT category_name FROM Top_categories_rank ORDER BY category_rank ASC LIMIT 15")
-                cats = [row["category_name"] for row in cur.fetchall()]
-            
-            resp = {
-                "type": "faq",
-                "data": "We have businesses across many categories! Here are some of the most popular ones:",
-                "suggestions": [{"title": c, "action": "query_rewrite", "query": c} for c in cats]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        if q_lower in ["browse locations", "top cities", "top cities 📍"]:
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                cur.execute("SELECT city_name FROM Top_cities_rank ORDER BY city_rank ASC LIMIT 15")
-                cities = [row["city_name"] for row in cur.fetchall()]
-            
-            resp = {
-                "type": "faq",
-                "data": "We have listings across all major cities! Select a city below to explore:",
-                "suggestions": [{"title": c, "action": "query_rewrite", "query": c} for c in cities]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        # --- NLU Classification & Multi-turn Resolution ---
-        nlu = await anyio.to_thread.run_sync(parse_query_nlu, req.query, lang, chat_history)
-        intents = nlu.get("intents", ["Unknown"])
-        primary_intent = intents[0] if intents else "Unknown"
-        entities = nlu.get("entities", {})
         
-        # Determine if we should force business search intent
-        business_search_keywords = [
-            "restaurant", "hotel", "hospital", "gym", "salon", "school", "cafe", "shop", 
-            "doctor", "clinic", "food", "dining", "spa", "boutique", "fitness", "dentist",
-            "bakery", "service", "lawyer", "advocate", "mechanic", "plumber"
-        ]
-        ranking_keywords = [
-            "best", "top", "highest rated", "highest-rated", "top 5", "top 10", 
-            "most reviewed", "most-reviewed", "reviews", "popular"
-        ]
-        
-        has_biz_keyword = any(k in q_lower for k in business_search_keywords)
-        has_rank_keyword = any(k in q_lower for k in ranking_keywords)
-        has_cache_cat = any(cat.lower() in q_lower for cat in CATEGORIES_CACHE)
-        
-        is_forced_search = has_biz_keyword or has_rank_keyword or has_cache_cat
-        
-        if is_forced_search:
-            primary_intent = "Business Search"
-            print(f"[OVERRIDE] Forced intent to Business Search due to keywords/categories.")
-            
-        print(f"[NLU] Intent: {primary_intent}, Entities: {entities}")
-
-        # --- Intent: Greeting, Help, or General Conversation ---
-        if primary_intent in ["Greeting", "Help", "General AI Question"] or is_greeting(req.query):
-            ai_resp = await anyio.to_thread.run_sync(get_ai_conversational_response, req.query, lang, chat_history)
-            resp = {
-                "type": "faq",
-                "data": ai_resp.get("response", ""),
-                "suggestions": [{"title": s, "action": "query_rewrite", "query": s} for s in ai_resp.get("suggestions", [])]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        # --- Intent: Business Addition Save Confirmation ---
-        if primary_intent == "Business Addition" or q_lower in ["save this business", "yes save it", "yes, save it! 📥"]:
-            resp = {
-                "type": "faq",
-                "data": "I am a strictly Read-Only AI Business Assistant and cannot add or modify businesses in the database.",
-                "suggestions": [{"title": "Search Restaurants 🍕", "action": "query_rewrite", "query": "Restaurants"}]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        # --- Mandatory Auth Check for MY BUSINESS actions ---
-        is_my_biz_query = any(x in q_lower for x in [
-            "show my business", "show business", "my business",
-            "update my business", "update business",
-            "manage product", "manage products",
-            "manage deal", "manage deals"
-        ])
-        if is_my_biz_query:
-            if not session_phone and not session_email:
-                resp = {"type": "faq", "data": "Please login with your mobile number or email to manage your business profile. Click 'Login' at the top!"}
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-
-            from business_by_phone import get_businesses_by_phone, get_businesses_by_email
-            try:
-                raw_matches = get_businesses_by_phone(session_phone) if session_phone else get_businesses_by_email(session_email)
-                if not raw_matches:
-                    resp = {"type": "faq", "data": "I couldn't find a business registered with your credentials."}
-                    if chat_session_id:
-                        _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                    return resp
-                
-                biz_row = raw_matches[0]
-                results = map_business_fields([biz_row])
-                
-                if "manage product" in q_lower or "show product" in q_lower:
-                    with db_context() as conn:
-                        cur = conn.cursor()
-                        cur.execute("SELECT * FROM products WHERE business_id = ?", (biz_row.get("global_business_id"),))
-                        items = [dict(r) for r in cur.fetchall()]
-                    if not items:
-                        resp = {"type": "faq", "data": "You haven't added any products yet. Click 'Add Product' to start!"}
-                    else:
-                        resp = {"type": "manage_products", "content": items, "intro": "Here are your products:"}
-                    if chat_session_id:
-                        _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                    return resp
-                elif "manage deal" in q_lower or "show deal" in q_lower:
-                    with db_context() as conn:
-                        cur = conn.cursor()
-                        cur.execute("SELECT * FROM deals WHERE business_id = ?", (biz_row.get("global_business_id"),))
-                        items = [dict(r) for r in cur.fetchall()]
-                    if not items:
-                        resp = {"type": "faq", "data": "You haven't added any deals yet. Click 'Add Deal' to start!"}
-                    else:
-                        resp = {"type": "manage_deals", "content": items, "intro": "Here are your active deals:"}
-                    if chat_session_id:
-                        _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                    return resp
-                elif "show" in q_lower:
-                    mapped = map_business_fields([biz_row])[0]
-                    fields = [
-                        ("name", "Business Name"), ("category", "Category"),
-                        ("phone_number", "Phone"), ("address", "Address"),
-                        ("area", "Area"), ("city", "City"),
-                        ("state", "State"), ("website", "Website")
-                    ]
-                    suggs = []
-                    for fk, fn in fields:
-                        val = biz_row.get(fk)
-                        is_miss = not val or str(val).strip().lower() in ["none", "", "null", "not available"]
-                        suggs.append({
-                            "field": fk,
-                            "title": f"Update {fn}",
-                            "reason": f"{fn} is missing — add it now!" if is_miss else f"Current: {val}",
-                            "action": f"Update {fn}",
-                            "is_missing": is_miss
-                        })
-                    suggs.sort(key=lambda x: not x["is_missing"])
-                    resp = {
-                        "type": "database",
-                        "data": [mapped],
-                        "intro": f"Here is the business registered with your account:",
-                        "prompt": "Tap any field below to update your profile:",
-                        "suggestions": suggs
-                    }
-                    if chat_session_id:
-                        _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                    return resp
-                elif "update" in q_lower:
-                    fields = [
-                        ("name", lang_fetch("name", lang)), ("category", lang_fetch("category", lang)), 
-                        ("phone_number", lang_fetch("phone_number", lang)), ("address", lang_fetch("address", lang)), 
-                        ("area", lang_fetch("area", lang)), ("city", lang_fetch("city", lang)), 
-                        ("state", lang_fetch("state", lang)), ("website", lang_fetch("website", lang))
-                    ]
-                    suggs = []
-                    for fk, fn in fields:
-                        val = biz_row.get(fk)
-                        is_miss = not val or str(val).strip().lower() in ["none", "", "null", "not available"]
-                        suggs.append({
-                            "field": fk,
-                            "title": f"{lang_fetch('update_label', lang)} {fn}",
-                            "reason": f"{fn} {lang_fetch('missing_reason', lang)}" if is_miss else f"{lang_fetch('change_reason', lang)} {fn}.",
-                            "action": f"Update {fn}",
-                            "is_missing": is_miss
-                        })
-                    suggs.sort(key=lambda x: not x["is_missing"])
-                    resp = {"type": "suggestions", "intro": lang_fetch("update_prompt", lang), "content": suggs}
-                    if chat_session_id:
-                        _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                    return resp
-            except Exception as e:
-                return {"type": "faq", "data": "I had trouble finding your business. Please ensure you are logged in."}
-
-        # --- Legacy Quick Command Shortcuts ---
-        cmd_map = {
-            "add product": "start_add_product",
-            "add deal": "start_add_deal",
-            "add business": "add_new_business",
-            "new business": "add_new_business",
-            "reset chat": "reset_chat",
-            "login": "login_trigger"
-        }
-        if q_lower in cmd_map:
-            return {"type": "command", "command": cmd_map[q_lower]}
-
-        # --- Intent: Comparison ---
-        if primary_intent == "Comparison" or "compare" in q_lower:
-            biz_names = re.split(r'\band\b|\bvs\b|,', q_lower.replace("compare", ""))
-            biz_names = [n.strip() for n in biz_names if n.strip()]
-            
-            matched_listings = []
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                for name in biz_names[:3]: # Compare up to 3
-                    cur.execute("SELECT * FROM master_table WHERE LOWER(business_name) LIKE %s LIMIT 1", (f"%{name}%",))
-                    row = cur.fetchone()
-                    if row:
-                        matched_listings.append(row)
-                        
-            if len(matched_listings) >= 2:
-                mapped = map_business_fields(matched_listings)
-                intro_ai = await compare_businesses_ai(mapped[0], mapped[1], lang)
-                resp = {
-                    "type": "database",
-                    "data": mapped,
-                    "intro": intro_ai,
-                    "prompt": "Here is the side-by-side comparison. Let me know if you want to look for details or reviews.",
-                    "suggestions": [
-                        {"title": f"Show {mapped[0]['business_name']} Reviews ⭐", "action": "query_rewrite", "query": f"reviews of {mapped[0]['business_name']}"},
-                        {"title": f"Show {mapped[1]['business_name']} Reviews ⭐", "action": "query_rewrite", "query": f"reviews of {mapped[1]['business_name']}"}
-                    ]
-                }
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-            else:
-                resp = {
-                    "type": "faq",
-                    "data": "I couldn't find the businesses you'd like to compare. Make sure their names are written clearly (e.g., 'Compare Apollo and Medanta').",
-                    "suggestions": [{"title": "Try another search 🔍", "action": "query_rewrite", "query": "Compare Gold's Gym and Anytime Fitness"}]
-                }
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-
-        # --- Intent: Business Details, Website, or Contact ---
-        if primary_intent in ["Business Details", "Business Contact", "Business Website"] or any(k in q_lower for k in ["website of", "phone of", "details of"]):
-            biz_name_candidate = q_lower.replace("website of", "").replace("phone of", "").replace("details of", "").replace("contact of", "").strip()
-            # Clean up
-            biz_name_candidate = re.sub(r'\b(what is the|show the|find the)\b', '', biz_name_candidate).strip()
-            
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                cur.execute("SELECT * FROM master_table WHERE LOWER(business_name) LIKE %s LIMIT 1", (f"%{biz_name_candidate}%",))
-                row = cur.fetchone()
-                
-            if row:
-                mapped = map_business_fields([row])[0]
-                val_detail = ""
-                if primary_intent == "Business Website":
-                    val_detail = f"The official website for **{mapped['business_name']}** is: {mapped['website_url'] or 'Not Available'}"
-                elif primary_intent == "Business Contact":
-                    val_detail = f"The phone number for **{mapped['business_name']}** is: {mapped['phone_number'] or 'Not Available'}"
-                else:
-                    val_detail = f"Here are the details for **{mapped['business_name']}** in {mapped['city']}: {mapped['business_description'] or 'A verified business listing.'}"
-
-                resp = {
-                    "type": "database",
-                    "data": [mapped],
-                    "intro": val_detail,
-                    "prompt": "You can use the card buttons to call, get directions, visit their website, or leave a review.",
-                    "suggestions": [
-                        {"title": f"Check Reviews ⭐", "action": "query_rewrite", "query": f"reviews of {mapped['business_name']}"},
-                        {"title": f"Compare with others ⚖️", "action": "query_rewrite", "query": f"Compare {mapped['business_name']} and Anytime Fitness"}
-                    ]
-                }
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-
-        # --- Intent: Product Search ---
-        if primary_intent == "Product Search" or q_lower in ["products", "show products", "trending products", "recently added products"]:
-            product_category = entities.get("category")
-            product_name = entities.get("product")
-            if not product_name and not product_category:
-                product_name = q_lower.replace("products", "").replace("show", "").replace("trending", "").replace("recently added", "").strip() or None
-                
-            p_limit = entities.get("limit") or 10
-            p_offset = 0
-            try:
-                from mysql_pool import mysql_ctx
-                with mysql_ctx() as (conn, cur):
-                    query_str = "SELECT * FROM product_master WHERE 1=1"
-                    params = []
-                    if product_category:
-                        query_str += " AND (LOWER(category_name) LIKE %s OR LOWER(sub_category_name) LIKE %s)"
-                        params.extend([f"%{product_category.lower()}%", f"%{product_category.lower()}%"])
-                    if product_name:
-                        query_str += " AND (LOWER(product_name) LIKE %s OR LOWER(brand) LIKE %s)"
-                        params.extend([f"%{product_name.lower()}%", f"%{product_name.lower()}%"])
-                        
-                    ranking_map_prod = {"Budget Search": "budget", "Highest Rated": "highest_rated"}
-                    resolved_ranking = entities.get("ranking") or ranking_map_prod.get(primary_intent)
-                    if resolved_ranking == "highest_rated":
-                        query_str += " ORDER BY stars DESC"
-                    elif resolved_ranking == "budget":
-                        query_str += " ORDER BY price ASC"
-                    else:
-                        query_str += " ORDER BY stars DESC"
-                        
-                    query_str += f" LIMIT {p_limit} OFFSET {p_offset}"
-                    
-                    cur.execute(query_str, tuple(params))
-                    columns = [col[0] for col in cur.description]
-                    prod_results = [dict(zip(columns, row)) for row in cur.fetchall()]
-                    
-                formatted_products = []
-                for p in prod_results:
-                    formatted_products.append({
-                        "business_name": p.get("product_name"),
-                        "category": p.get("category_name"),
-                        "city": p.get("brand") or "Generic Brand",
-                        "phone_number": f"₹{p.get('price')}" if p.get("price") else "Price N/A",
-                        "rating": float(p.get("stars") or 0),
-                        "review_count": int(p.get("reviews") or 0),
-                        "image_url": p.get("img_url"),
-                        "website_url": p.get("product_url"),
-                        "business_description": p.get("description")
-                    })
-                    
-                summary_data = await anyio.to_thread.run_sync(
-                    generate_conversational_summary_and_chips, 
-                    req.query, 
-                    formatted_products, 
-                    lang, 
-                    chat_history
-                )
-                
-                resp = {
-                    "type": "database",
-                    "data": formatted_products,
-                    "intro": summary_data.get("summary", ""),
-                    "prompt": "Here are the top products I found:",
-                    "suggestions": [{"title": s, "action": "query_rewrite", "query": s} for s in summary_data.get("suggestions", [])],
-                    "search_metadata": {"offset": p_offset, "limit": p_limit}
-                }
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-                
-            except Exception as e:
-                print(f"[PRODUCT SEARCH ERROR] {e}")
-                resp = {"type": "faq", "data": "I encountered an error while searching for products."}
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-
-        # --- Hybrid Business Search Flow (Primary Path) ---
-        category = entities.get("category")
-        city = entities.get("location", {}).get("city")
-        extracted_area = entities.get("location", {}).get("area")
-        ranking = entities.get("ranking")
-        filters = entities.get("filters", {})
-        
-        # Manual parameter extraction fallback for forced searches
-        business_search_keywords_list = [
-            "restaurant", "hotel", "hospital", "gym", "salon", "school", "cafe", "shop", 
-            "doctor", "clinic", "food", "dining", "spa", "boutique", "fitness", "dentist",
-            "bakery", "service", "lawyer", "advocate", "mechanic", "plumber"
-        ]
-        
-        if not category:
-            # Look up categories cache
-            for cat in sorted(CATEGORIES_CACHE, key=len, reverse=True):
-                if cat.lower() in q_lower:
-                    category = cat
-                    break
-            # Fallback to business keywords if cache has no match
-            if not category:
-                for k in business_search_keywords_list:
-                    if k in q_lower:
-                        category = k.capitalize()
-                        break
-                        
-        # Check if India-wide search is explicitly mentioned
-        is_india_wide = "india" in q_lower or (entities.get("location", {}).get("country") and entities.get("location", {}).get("country").lower() == "india")
-        if is_india_wide:
-            city = "india"
-            
-        # Extract city and area manually if NLU missed it
-        if city != "india" and not city:
-            for c in sorted(CITIES_CACHE, key=len, reverse=True):
-                if c.lower() in q_lower:
-                    city = c
-                    break
-                    
-        if not extracted_area:
-            for a in sorted(AREAS_CACHE, key=len, reverse=True):
-                if a.lower().replace(" ", "") in q_lower.replace(" ", ""):
-                    extracted_area = a
-                    break
-        
-        # Context carrying over
-        last_meta = None
-        if chat_session_id:
-            last_meta = _get_last_search_metadata(chat_session_id)
-            
-        if not category and last_meta and last_meta.get("category"):
-            category = last_meta.get("category")
-        if not city and last_meta and last_meta.get("city"):
-            city = last_meta.get("city")
-        if not extracted_area and last_meta and last_meta.get("area"):
-            extracted_area = last_meta.get("area")
-
-        # Normalize generic category words to None (to search all categories)
-        if category and category.lower() in ["business", "businesses", "general", "all", "any"]:
-            category = None
-
-        # Offset / limit
-        current_limit = entities.get("limit") or 10
-        current_offset = 0
-        if last_meta:
-            is_next = q_lower in ["next", "show more", "next results", "show next 10 results", "show next 5 results", "next 5", "next 10", "next 5 results", "next 10 results", "show next 10", "next option", "more", "/next"]
-            is_prev = q_lower in ["prev", "previous", "previous results", "show previous 10 results", "show previous 5 results", "previous 5 results", "/prev"]
-            limit_val = last_meta.get("limit") or current_limit
-            if is_next:
-                current_offset = last_meta.get("offset", 0) + limit_val
-                current_limit = limit_val
-            elif is_prev:
-                current_offset = max(0, last_meta.get("offset", 0) - limit_val)
-                current_limit = limit_val
-
-        # Fallback city
-        if not city:
-            if session_phone or session_email:
-                try:
-                    from business_by_phone import get_businesses_by_phone, get_businesses_by_email
-                    ub = get_businesses_by_phone(session_phone) if session_phone else get_businesses_by_email(session_email)
-                    if ub: city = ub[0].get("city", "").lower()
-                except:
-                    pass
-            if not city:
-                try:
-                    from mysql_pool import mysql_ctx
-                    with mysql_ctx() as conn:
-                        cur = conn.cursor()
-                        cur.execute("SELECT city_name FROM Top_cities_rank ORDER BY city_rank ASC LIMIT 1")
-                        r = cur.fetchone()
-                        city = r[0].lower() if r else "surat"
-                except Exception as e:
-                    print(f"Fallback city error: {e}")
-                    city = "surat"
-
-        # Map ranking/intent
-        ranking_map = {
-            "Budget Search": "budget",
-            "Luxury Search": "luxury",
-            "Highest Rated": "highest_rated",
-            "Most Reviewed": "most_reviewed",
-            "Recently Added": "newest",
-            "Trending": "trending"
-        }
-        resolved_ranking = ranking or ranking_map.get(primary_intent)
-
-        # Check Category Search
-        if category or primary_intent == "Business Search":
-            print(f"[HYBRID SEARCH] Database First. Querying: category={category}, city={city}, area={extracted_area}")
-            
-            # Step 1: Database First Search
-            results = query_local_businesses(
-                category=category, 
-                city=city, 
-                area=extracted_area, 
-                min_rating=None, 
-                open_only=filters.get("open_now", False), 
-                filters=filters, 
-                ranking_intent=resolved_ranking,
-                offset=current_offset, 
-                limit=current_limit
-            )
-            
-            # Step 2: Ensure strictly Read-Only logic
-            explicit_online = any(w in q_lower for w in ["online", "live", "web", "scrape", "internet", "google", "find online", "search online", "latest", "current", "real-time", "real time"])
-            
-            if explicit_online and current_offset == 0:
-                resp = {
-                    "type": "faq",
-                    "data": "I am a strictly Read-Only AI assistant and only provide information from our verified local database. I cannot search the internet.",
-                    "suggestions": [{"title": "Search Local Listings 🏢", "action": "query_rewrite", "query": "Local Businesses"}]
-                }
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-
-            if results or current_offset > 0:
-                mapped_results = map_business_fields(results)
-                total_count = count_local_businesses(category, city, area=extracted_area, filters=filters)
-                
-                pending_save = None
-
-                # Step 3: Call OpenRouter for Conversational summary & contextual suggestion chips
-                summary_data = await anyio.to_thread.run_sync(
-                    generate_conversational_summary_and_chips, 
-                    req.query, 
-                    mapped_results, 
-                    lang, 
-                    chat_history
-                )
-                
-                # Format Suggestions
-                suggestions = []
-                for s in summary_data.get("suggestions", []):
-                    suggestions.append({
-                        "title": s,
-                        "action": "query_rewrite",
-                        "query": s
-                    })
-                    
-                # Standard pagination chips
-                if total_count > current_offset + current_limit:
-                    suggestions.append({
-                        "title": "Next 10 Results ⏭️",
-                        "action": "next_option",
-                        "query": "Show Next 10 Results"
-                    })
-                if current_offset > 0:
-                    suggestions.append({
-                        "title": "Previous Results ⏮️",
-                        "action": "prev_option",
-                        "query": "Previous Results"
-                    })
-                    
-                search_meta = {
-                    "category": category,
-                    "city": city,
-                    "area": extracted_area,
-                    "offset": current_offset,
-                    "limit": current_limit,
-                    "pending_save_business": pending_save
-                }
-                
-                resp = {
-                    "type": "database",
-                    "data": mapped_results,
-                    "intro": summary_data.get("summary", ""),
-                    "prompt": "Use the options below to filter or compare listings:",
-                    "suggestions": suggestions,
-                    "search_metadata": search_meta
-                }
-                
-                # Log to history for Analytics
-                try:
-                    conn = sqlite3.connect(DATABASE_URL)
-                    cur = conn.cursor()
-                    cur.execute("""
-                        INSERT INTO search_history (user_id, search_query, resolved_city, resolved_category)
-                        VALUES (?, ?, ?, ?)
-                    """, (get_current_user_id(session=req.session), req.query, city, category))
-                    conn.commit()
-                    conn.close()
-                except Exception as cache_err:
-                    pass
-
-                # Set Cache
-                search_cache.set(req.query, lang, resp)
-
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-
-        # --- Fallback: Conversational AI Response ---
-        ai_resp = await anyio.to_thread.run_sync(get_ai_conversational_response, req.query, lang, chat_history)
-        resp = {
-            "type": "faq",
-            "data": ai_resp.get("response", ""),
-            "suggestions": [{"title": s, "action": "query_rewrite", "query": s} for s in ai_resp.get("suggestions", [])]
-        }
-        if chat_session_id:
-            _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+        resp = await handle_chat_query(req, session_phone, session_email, lang)
         return resp
-
     except Exception as e:
         print(f"[Search Query Error] {e}")
         raise HTTPException(400, str(e))
@@ -2821,13 +2250,74 @@ class SuggestionRequest(BaseModel):
 
 @app.post("/api/smart-suggestions")
 def get_ai_suggestions(req: SuggestionRequest):
+    """
+    Database-driven autocomplete for the chatbot input box.
+    Queries real city and category names from MySQL instead of using an LLM.
+    """
+    text = (req.text or "").strip().lower()
+    if not text or text == "[empty]":
+        # Return common starter suggestions from top cities and categories
+        try:
+            with mysql_ctx() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT city_name FROM Top_cities_rank ORDER BY city_rank ASC LIMIT 3")
+                cities = [r[0] for r in cur.fetchall() if r[0]]
+                cur.execute("SELECT category_name FROM Top_categories_rank ORDER BY category_rank ASC LIMIT 3")
+                cats = [r[0] for r in cur.fetchall() if r[0]]
+            starters = [f"Best restaurants in {c}" for c in cities[:2]]
+            starters += [f"Top {cat}s" for cat in cats[:2]]
+            starters.append("Hospitals near me")
+            return {"suggestions": starters[:5]}
+        except Exception:
+            return {"suggestions": ["Restaurants", "Hospitals", "Gyms", "Cafes", "Hotels"]}
+
+    suggestions = []
     try:
-        from llm_client import get_smart_suggestions
-        suggs = get_smart_suggestions(req.text, req.language, req.flow)
-        return {"suggestions": suggs}
+        with mysql_ctx() as conn:
+            cur = conn.cursor()
+            # Match cities
+            cur.execute(
+                "SELECT DISTINCT city FROM master_table "
+                "WHERE LOWER(city) LIKE %s AND city IS NOT NULL AND city != '' LIMIT 3",
+                (f"%{text}%",)
+            )
+            matched_cities = [r[0].title() for r in cur.fetchall() if r[0]]
+            for c in matched_cities:
+                suggestions.append(f"Businesses in {c}")
+
+            # Match categories
+            cur.execute(
+                "SELECT DISTINCT business_category FROM master_table "
+                "WHERE LOWER(business_category) LIKE %s "
+                "AND business_category IS NOT NULL AND business_category != '' LIMIT 3",
+                (f"%{text}%",)
+            )
+            matched_cats = [r[0] for r in cur.fetchall() if r[0]]
+            for cat in matched_cats:
+                suggestions.append(f"Top {cat}s")
+
+            # Match business names
+            cur.execute(
+                "SELECT DISTINCT business_name FROM master_table "
+                "WHERE LOWER(business_name) LIKE %s "
+                "AND business_name IS NOT NULL AND business_name != '' LIMIT 2",
+                (f"%{text}%",)
+            )
+            matched_names = [r[0] for r in cur.fetchall() if r[0]]
+            suggestions.extend(matched_names)
+
     except Exception as e:
-        print(f"Server Suggestion Error: {e}")
-        return {"suggestions": []}
+        print(f"[SMART SUGGESTIONS] DB error: {e}")
+
+    # Deduplicate and limit
+    seen = set()
+    unique = []
+    for s in suggestions:
+        if s.lower() not in seen:
+            seen.add(s.lower())
+            unique.append(s)
+
+    return {"suggestions": unique[:5]}
 
 
 # ── BOOKMARKS / FAVORITES ENDPOINTS ───────────────────────────────────

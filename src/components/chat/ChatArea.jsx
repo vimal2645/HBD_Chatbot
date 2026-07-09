@@ -500,6 +500,8 @@ const ChatArea = (props) => {
         id: Date.now(), role: 'bot', type: responseType,
         content: data.data || data.content || (trans.fallback_response || 'I am not sure about that.'),
         intro: data.intro, suggestions: data.suggestions, prompt: data.prompt,
+        search_metadata: data.search_metadata || null,
+        context: data.context || null
       }]);
     } catch (e) {
       clearInterval(statusInterval);
@@ -669,6 +671,18 @@ const ChatArea = (props) => {
         await handleDeleteSession(null, currentSessionId);
       }
       setShowResetConfirm(false);
+      setLocalMessages([
+        {
+          id: 'init',
+          role: 'bot',
+          type: 'explore_welcome',
+          content: trans.chat_cleared || '👋 Chat cleared. Welcome back!',
+          suggestions: [
+            { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
+            { title: '🛍️ Products', action: 'query_rewrite', query: 'explore products' }
+          ]
+        }
+      ]);
       setResetConfirmCount(0);
       setFlowMode('QUERY');
       setWizardStep(0);
