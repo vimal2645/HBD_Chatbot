@@ -12,8 +12,6 @@ from urllib.parse import unquote
 from abc import ABC, abstractmethod
 
 from db_pool import db_context
-from llm_client import call_llm
-from models import MODEL
 
 EXCEL_FILE = "missing_data_from_db.xlsx"
 
@@ -391,118 +389,26 @@ def search_online_provider_layer(query: str, provider_name: str = "duckduckgo") 
     return provider.search(query)
 
 def search_online_and_save(query: str) -> List[Dict]:
+    """
+    Previously used an LLM to synthesise business records from web scraping.
+    LLM integration has been removed. All results come from master_table (MySQL).
+    The /api/query endpoint handles fallback messaging when DB returns 0 results.
+    """
     if not query or not query.strip():
         raise ValueError("Search query cannot be empty")
 
-    print(f"[SCRAPER] Initiating real-time web scraping fallback for: '{query}'")
-    scraped_data = search_online_provider_layer(query, "duckduckgo")
-    
-    if not scraped_data:
-        print("[SCRAPER] Web scraping returned 0 results. Falling back to LLM knowledge synthesis.")
-        scraped_context = "No search results found."
-    else:
-        print(f"[SCRAPER] Scraped {len(scraped_data)} web results. Structuring data...")
-        formatted_results = []
-        for idx, r in enumerate(scraped_data, 1):
-            formatted_results.append(
-                f"Result {idx}:\n"
-                f"Title: {r['title']}\n"
-                f"URL: {r['link']}\n"
-                f"Snippet: {r['snippet']}\n"
-            )
-        scraped_context = "\n".join(formatted_results)
+    print(f"[SEARCH_ONLINE] LLM removed — returning empty list. Query: '{query}'")
+    return []
 
-    prompt = f"""
-You are an advanced data extraction and enrichment agent for local businesses.
-We searched the web for: "{query}"
-
-Below are the scraped search engine results:
-{scraped_context}
-
-Task:
-Extract and compile a list of up to 5 local businesses that match the query "{query}" from the search results.
-
-CRITICAL RULES FOR LOCAL BUSINESS EXTRACTION:
-1. DO NOT extract directory websites, listing platforms, or food delivery portals (such as TripAdvisor, Zomato, Swiggy, Justdial, Yelp, Restaurant Guru, Foursquare, etc.) as business entities.
-2. Instead, look at the snippets of these directory results to identify the names of ACTUAL physical businesses (e.g., individual restaurants, shops, hotels, offices) mentioned within them.
-3. Extract and return these actual local businesses. If the search results do not list specific local businesses, you must synthesize realistic, actual physical businesses that match the query and location (e.g. individual real or realistic restaurants in Maninagar, Ahmedabad) using your general knowledge of the area.
-4. Ensure the businesses are actual physical establishments located in the requested city and specific area/neighborhood (e.g., Maninagar, Ahmedabad) if specified.
-5. Prioritize real details from the search results where available, but enrich missing fields (such as address, phone number, website, google_maps_link, latitude, longitude, opening_hours, business_description) using your knowledge to ensure a complete profile.
-
-For each business, return ONLY these fields in a strict JSON array of objects:
-- name: The name of the business (e.g. "Elite Fitness Gym").
-- address: The address of the business. If missing, synthesize a realistic local address.
-- website: The website URL. Prioritize the real URL from the search results, or make a realistic one.
-- phone_number: The phone number of the business. Prioritize real numbers, or synthesize a realistic Indian phone number.
-- reviews_count: An integer representing review count (prioritize real, or synthesize a realistic number like 45).
-- reviews_average: A float representing review rating (prioritize real, or synthesize between 3.5 and 5.0).
-- category: The business category (e.g. "Gym", "Restaurant", "Doctor", "Hospital", "Hotel").
-- subcategory: A specific subcategory/type of that category (e.g. "CrossFit", "South Indian", "Emergency", "Cardiology", "Luxury").
-- city: The city name (e.g. "Pune", "Ahmednagar").
-- state: The state name (e.g. "Maharashtra").
-- area: The specific area/neighborhood (e.g. "Kothrud", "Kalyan Nagar").
-- google_maps_link: A realistic Google Maps link for the business address.
-- latitude: A float representing the latitude coordinates (e.g. 18.5204).
-- longitude: A float representing the longitude coordinates (e.g. 73.8567).
-- opening_hours: Typical opening hours (e.g. "09:00 AM - 09:00 PM" or "24 Hours").
-- business_description: A short 1-2 sentence description of the business.
-
-Rules:
-- Output ONLY valid, strict JSON.
-- No markdown formatting.
-- Absolutely NO conversational text or explanations.
-"""
-
-    message = call_llm(
-        messages=[{"role": "user", "content": prompt}],
-        model="google/gemini-2.5-flash",
-        max_tokens=3000
-    )
-
-    content = message.get("content", "").strip()
-    
-    # Extract JSON array
-    json_str = content
-    start_idx = content.find('[')
-    end_idx = content.rfind(']')
-    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-        json_str = content[start_idx:end_idx+1]
-    
-    try:
-        raw_results = json.loads(json_str)
-    except json.JSONDecodeError as jde:
-        print(f"DEBUG: Failed to parse JSON. Content was: {content[:500]}...")
-        print(f"DEBUG: JSON error: {jde}")
-        raise RuntimeError("LLM returned invalid JSON")
-
-    if not isinstance(raw_results, list) or not raw_results:
-        return []
-
-    results = _normalize_results(raw_results)
-    save_results_to_mysql(results)
-
-    # ----- Save to Excel -----
-    df = pd.DataFrame(results)
-    try:
-        existing = pd.read_excel(EXCEL_FILE)
-        df = pd.concat([existing, df], ignore_index=True)
-    except FileNotFoundError:
-        pass
-
-    try:
-        df.to_excel(EXCEL_FILE, index=False)
-    except Exception as exc_err:
-        print(f"Excel save failed: {exc_err}")
-
-    return results
 
 if __name__ == "__main__":
     print("🔎 Testing search_online module\n")
     q = input("Enter search query: ").strip()
     results = search_online_and_save(q)
     if not results:
-        print("❌ No results returned")
+        print("❌ No results returned (LLM removed — use the database directly)")
     else:
         print(f"✅ {len(results)} result(s):\n")
         for i, r in enumerate(results, 1):
             print(f"{i}. {r['business_name']} | {r['business_category']} | {r['city']}, {r['state']}")
+

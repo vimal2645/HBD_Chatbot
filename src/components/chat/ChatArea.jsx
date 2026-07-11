@@ -513,6 +513,8 @@ const ChatArea = (props) => {
         id: Date.now(), role: 'bot', type: responseType,
         content: data.data || data.content || (trans.fallback_response || 'I am not sure about that.'),
         intro: data.intro, suggestions : data.suggestions, prompt: data.prompt,
+        search_metadata: data.search_metadata || null,
+        context: data.context || null
       }]);
     } catch (e) {
       clearInterval(statusInterval);
@@ -737,6 +739,18 @@ const ChatArea = (props) => {
         await handleDeleteSession(null, currentSessionId);
       }
       setShowResetConfirm(false);
+      setLocalMessages([
+        {
+          id: 'init',
+          role: 'bot',
+          type: 'explore_welcome',
+          content: trans.chat_cleared || '👋 Chat cleared. Welcome back!',
+          suggestions: [
+            { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
+            { title: '🛍️ Products', action: 'query_rewrite', query: 'explore products' }
+          ]
+        }
+      ]);
       setResetConfirmCount(0);
       setFlowMode('QUERY');
       setWizardStep(0);
@@ -749,7 +763,7 @@ const ChatArea = (props) => {
       setThinkingStatus('Fetching business profile...');
       addThinking();
       try {
-        const data = await api.query({ query: 'show my business', session, language: lang, session_id: currentSessionId });
+        const data = await api.query({ query: 'Show my business', session, language: lang, session_id: currentSessionId });
         setThinkingStatus('');
         removeThinking();
         if (!data || (!data.type && data.detail)) {
@@ -778,7 +792,7 @@ const ChatArea = (props) => {
       setThinkingStatus('Loading your businesses...');
       addThinking();
       try {
-        const data = await api.query({ query: 'update my business', session, language: lang, session_id: currentSessionId});
+        const data = await api.query({ query: 'Update my business', session, language: lang, session_id: currentSessionId});
         removeThinking();
         setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: data.type, content: data.data, intro: data.intro, mode: data.mode }]);
       } catch (e) {

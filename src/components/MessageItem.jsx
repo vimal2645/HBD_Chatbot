@@ -200,7 +200,7 @@ function StarRating({ rating = 0, max = 5 }) {
           key={i}
           size={10}
           fill={i < Math.floor(rating) ? '#f59e0b' : 'none'}
-          style={{ color: i < Math.floor(rating) ? '#f59e0b' : 'var(--border-default)' }}
+          style={{ color: i < Math.floor(rating) ? '#f59e0b' : 'var(--border-subtle)' }}
         />
       ))}
       <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: 'var(--text-secondary)', marginLeft: 3 }}>
@@ -285,6 +285,134 @@ function getOpeningStatus(openingHours, category) {
   }
   
   return { hours, isOpen: true, statusText: "Open Now" };
+}
+
+// ─────────────────────────────────────────────────────────
+// PRODUCT CARD
+// ─────────────────────────────────────────────────────────
+function ProductCard({ prod, onAction }) {
+  const name = prod.product_name || prod.business_name || 'Product';
+  const category = prod.category_name || prod.category || 'Product';
+  const brand = prod.brand || (prod.city && prod.city !== 'Generic Brand' ? prod.city : '') || '';
+  const rawPrice = prod.price !== undefined ? prod.price : (prod.phone_number ? prod.phone_number.replace('₹', '') : '');
+  const price = rawPrice ? `₹${rawPrice}` : 'Price N/A';
+  const listPrice = prod.list_price ? `₹${prod.list_price}` : null;
+  const rating = parseFloat(prod.stars !== undefined ? prod.stars : (prod.rating || 0));
+  const reviewCount = parseInt(prod.reviews !== undefined ? prod.reviews : (prod.review_count || 0));
+  const imageUrl = prod.image_url;
+  const productUrl = prod.product_url || prod.website_url;
+  const description = prod.description || prod.business_description;
+
+  const coverStyle = getAvatarStyle(name + "_prod");
+
+  return (
+    <div className="prod-card" style={{
+      background: 'var(--bg-surface)',
+      border: '1px solid var(--border-subtle)',
+      borderRadius: 'var(--radius-lg)',
+      overflow: 'hidden',
+      boxShadow: 'var(--shadow-sm)',
+      transition: 'all 200ms ease',
+      display: 'flex',
+      flexDirection: 'column',
+      position: 'relative',
+      height: '100%'
+    }}
+    onMouseEnter={e => { e.currentTarget.style.boxShadow = 'var(--shadow-md)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+    onMouseLeave={e => { e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+    >
+      {/* Cover image or fallback */}
+      <div style={{
+        height: 120,
+        position: 'relative',
+        overflow: 'hidden',
+        background: imageUrl ? `url(${imageUrl}) center/cover no-repeat` : undefined,
+        ...(!imageUrl ? coverStyle : {}),
+      }}>
+        {!imageUrl && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', fontSize: 32 }}>
+            📦
+          </div>
+        )}
+      </div>
+
+      {/* Card Body */}
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+          <span className="badge badge-primary" style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase' }}>
+            {category}
+          </span>
+          {brand && (
+            <span style={{ fontSize: '0.65rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+              by {brand}
+            </span>
+          )}
+        </div>
+
+        <h4 style={{ 
+          fontSize: '0.85rem', 
+          fontWeight: 800, 
+          margin: '0 0 6px 0', 
+          color: 'var(--text-primary)', 
+          lineHeight: 1.3,
+          height: 36,
+          overflow: 'hidden',
+          display: '-webkit-box',
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: 'vertical'
+        }} title={name}>
+          {name}
+        </h4>
+
+        {/* Rating and Reviews */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+          <StarRating rating={rating} />
+          {reviewCount > 0 && (
+            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+              ({reviewCount})
+            </span>
+          )}
+        </div>
+
+        {/* Price & Action row */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 'auto', paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ fontSize: '0.9rem', fontWeight: 800, color: '#059669' }}>
+              {price}
+            </span>
+            {listPrice && (
+              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textDecoration: 'line-through' }}>
+                {listPrice}
+              </span>
+            )}
+          </div>
+
+          {productUrl && (
+            <a href={productUrl} target="_blank" rel="noopener noreferrer" style={{
+              marginLeft: 'auto',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 4,
+              padding: '6px 12px',
+              borderRadius: 8,
+              background: 'linear-gradient(135deg, var(--color-primary), var(--color-accent))',
+              color: 'white',
+              fontSize: '0.75rem',
+              fontWeight: 700,
+              textDecoration: 'none',
+              transition: 'all 150ms ease'
+            }}
+            onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.02)'; }}
+            onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+            >
+              View <ExternalLink size={10} />
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1082,6 +1210,167 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
     );
   }
 
+  // ── EXPLORE WELCOME (Initial two-button greeting) ─────
+  if (message.type === 'explore_welcome') {
+    const suggestions = message.suggestions || [];
+    return (
+      <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 16, gap: 8 }}>
+        {/* Bot avatar */}
+        <div style={{
+          width: 28, height: 28, borderRadius: '50%',
+          background: 'linear-gradient(135deg, #4f46e5, #7c3aed)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 13, flexShrink: 0, marginTop: 4,
+        }}>
+          🐝
+        </div>
+        <div style={{ maxWidth: '88%', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Greeting text */}
+          <div style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '4px 18px 18px 18px',
+            padding: '12px 16px',
+            fontSize: '0.875rem',
+            color: 'var(--text-primary)',
+            boxShadow: 'var(--shadow-sm)',
+            lineHeight: 1.5,
+            fontWeight: 500,
+          }}>
+            <MarkdownText text={String(message.content || '')} />
+            <p style={{ marginTop: 8, fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+              What would you like to explore today?
+            </p>
+          </div>
+          {/* Two big explore buttons */}
+          {suggestions.length > 0 && (
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {suggestions.map((s, idx) => {
+                const isBusinessBtn = s.query?.includes('business');
+                return (
+                  <button
+                    key={idx}
+                    onClick={() => onAction(s.action, s.query)}
+                    style={{
+                      flex: '1 1 140px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                      padding: '18px 12px',
+                      background: isBusinessBtn
+                        ? 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)'
+                        : 'linear-gradient(135deg, #0891b2 0%, #0e7490 100%)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: 16,
+                      cursor: 'pointer',
+                      fontWeight: 700,
+                      fontSize: '0.875rem',
+                      transition: 'all 200ms ease',
+                      boxShadow: isBusinessBtn
+                        ? '0 4px 16px rgba(79,70,229,0.35)'
+                        : '0 4px 16px rgba(8,145,178,0.35)',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-3px) scale(1.02)'; e.currentTarget.style.boxShadow = isBusinessBtn ? '0 8px 24px rgba(79,70,229,0.45)' : '0 8px 24px rgba(8,145,178,0.45)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0) scale(1)'; e.currentTarget.style.boxShadow = isBusinessBtn ? '0 4px 16px rgba(79,70,229,0.35)' : '0 4px 16px rgba(8,145,178,0.35)'; }}
+                  >
+                    <span style={{ fontSize: 24, lineHeight: 1 }}>
+                      {isBusinessBtn ? '🏢' : '🛍️'}
+                    </span>
+                    <span>{s.title}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <p style={{ fontSize: '0.6875rem', color: 'var(--text-muted)', marginTop: 2, paddingLeft: 2 }}>
+            💡 Or just type your question below
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── FLOW STEP (City/Category/Product picker chips) ─────
+  if (message.type === 'flow_step') {
+    const suggestions = message.suggestions || [];
+    return (
+      <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 16, gap: 8 }}>
+        {/* Bot avatar */}
+        <div style={{
+          width: 28, height: 28, borderRadius: '50%',
+          background: 'linear-gradient(135deg, #4f46e5, #7c3aed)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 13, flexShrink: 0, marginTop: 4,
+        }}>
+          🐝
+        </div>
+        <div style={{ maxWidth: '92%', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Step question */}
+          <div style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '4px 18px 18px 18px',
+            padding: '12px 16px',
+            fontSize: '0.875rem',
+            color: 'var(--text-primary)',
+            boxShadow: 'var(--shadow-sm)',
+            lineHeight: 1.5,
+          }}>
+            <MarkdownText text={String(message.content || '')} />
+          </div>
+          {/* Chips grid */}
+          {suggestions.length > 0 && (
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              paddingLeft: 2,
+            }}>
+              {suggestions.map((s, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => onAction(s.action, s.query)}
+                  style={{
+                    padding: '7px 16px',
+                    background: 'var(--bg-surface)',
+                    border: '1.5px solid var(--border-subtle)',
+                    borderRadius: 999,
+                    cursor: 'pointer',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    color: 'var(--text-secondary)',
+                    transition: 'all 150ms ease',
+                    boxShadow: 'var(--shadow-sm)',
+                    whiteSpace: 'nowrap',
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.background = 'var(--color-primary)';
+                    e.currentTarget.style.borderColor = 'var(--color-primary)';
+                    e.currentTarget.style.color = 'white';
+                    e.currentTarget.style.transform = 'translateY(-1px)';
+                    e.currentTarget.style.boxShadow = '0 4px 12px rgba(79,70,229,0.25)';
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = 'var(--bg-surface)';
+                    e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                    e.currentTarget.style.color = 'var(--text-secondary)';
+                    e.currentTarget.style.transform = 'translateY(0)';
+                    e.currentTarget.style.boxShadow = 'var(--shadow-sm)';
+                  }}
+                >
+                  {s.title}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // ── WELCOME CARD ──────────────────────────────────────
   if (message.type === 'welcome_card') {
     return (
@@ -1261,6 +1550,93 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
             Login / Register
           </ActionBtn>
         </div>
+      </div>
+    );
+  }
+
+  // ── PRODUCT SEARCH DATABASE RESPONSE ──────────────────
+  if (message.type === 'database_products') {
+    const items = Array.isArray(message.content) ? message.content
+      : Array.isArray(message.data) ? message.data : [];
+
+    if (items.length === 0) {
+      return (
+        <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 12 }}>
+          <div className="chat-bubble-bot">No products found.</div>
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ marginBottom: 16, animation: 'slideUp 300ms ease', maxWidth: '100%' }}>
+        {message.intro && (
+          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 8 }}>
+            <div className="chat-bubble-bot">{message.intro}</div>
+          </div>
+        )}
+        
+        {/* Responsive Grid Layout for Product Cards */}
+        <div style={{ 
+          display: 'grid', 
+          gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', 
+          gap: 14, 
+          marginTop: 10,
+          marginBottom: 10
+        }}>
+          {items.map((prod, idx) => (
+            <ProductCard key={prod.id || idx} prod={prod} onAction={onAction} />
+          ))}
+        </div>
+
+        {/* Suggestion Chips */}
+        {message.suggestions && message.suggestions.length > 0 && message.suggestions.some(s => s.query) && (
+          <div style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 8,
+            marginTop: 12,
+            justifyContent: 'flex-start'
+          }}>
+            {message.suggestions.filter(s => s.query).map((s, idx) => (
+              <button
+                key={idx}
+                onClick={() => onAction(s.action, s.query)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '6px 14px',
+                  background: 'var(--bg-surface)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-full)',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  color: 'var(--text-secondary)',
+                  transition: 'all var(--transition-fast)',
+                  boxShadow: 'var(--shadow-sm)',
+                  whiteSpace: 'nowrap'
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.borderColor = 'var(--color-primary)';
+                  e.currentTarget.style.color = 'var(--color-primary)';
+                  e.currentTarget.style.background = 'var(--color-primary-light)';
+                  e.currentTarget.style.transform = 'translateY(-1px)';
+                  e.currentTarget.style.boxShadow = 'var(--shadow-md)';
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                  e.currentTarget.style.color = 'var(--text-secondary)';
+                  e.currentTarget.style.background = 'var(--bg-surface)';
+                  e.currentTarget.style.transform = 'translateY(0)';
+                  e.currentTarget.style.boxShadow = 'var(--shadow-sm)';
+                }}
+              >
+                {s.title}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -1564,6 +1940,7 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
 
   // ── STANDARD TEXT / FAQ ───────────────────────────────
   const content = String(message.content || '');
+  const textSuggestions = (message.suggestions || []).filter(s => s.query);
   return (
     <div style={{ display: 'flex', justifyContent: isBot ? 'flex-start' : 'flex-end', marginBottom: 12, gap: 8 }}>
       {/* Bot avatar */}
@@ -1578,7 +1955,7 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
         </div>
       )}
 
-      <div style={{ maxWidth: '72%', display: 'flex', flexDirection: 'column', gap: 4, alignItems: isBot ? 'flex-start' : 'flex-end' }}>
+      <div style={{ maxWidth: '82%', display: 'flex', flexDirection: 'column', gap: 4, alignItems: isBot ? 'flex-start' : 'flex-end' }}>
         <div className={isBot ? 'chat-bubble-bot' : 'chat-bubble-user'}>
           {isBot ? <MarkdownText text={content} /> : content}
         </div>
@@ -1587,6 +1964,46 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <CopyButton text={content} />
             <SpeakerButton text={content} language={language} />
+          </div>
+        )}
+        {/* Suggestion chips for faq/text messages with query suggestions */}
+        {isBot && textSuggestions.length > 0 && (
+          <div style={{
+            display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 6
+          }}>
+            {textSuggestions.map((s, idx) => (
+              <button
+                key={idx}
+                onClick={() => onAction(s.action, s.query)}
+                style={{
+                  padding: '6px 14px',
+                  background: 'var(--bg-surface)',
+                  border: '1.5px solid var(--border-subtle)',
+                  borderRadius: 999,
+                  cursor: 'pointer',
+                  fontSize: '0.775rem',
+                  fontWeight: 600,
+                  color: 'var(--text-secondary)',
+                  transition: 'all 150ms ease',
+                  boxShadow: 'var(--shadow-sm)',
+                  whiteSpace: 'nowrap',
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.background = 'var(--color-primary)';
+                  e.currentTarget.style.borderColor = 'var(--color-primary)';
+                  e.currentTarget.style.color = 'white';
+                  e.currentTarget.style.transform = 'translateY(-1px)';
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.background = 'var(--bg-surface)';
+                  e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                  e.currentTarget.style.color = 'var(--text-secondary)';
+                  e.currentTarget.style.transform = 'translateY(0)';
+                }}
+              >
+                {s.title}
+              </button>
+            ))}
           </div>
         )}
       </div>

@@ -52,10 +52,39 @@ def _get_pool():
         )
     return _pool
 
+
+class PooledConnectionWrapper:
+    def __init__(self, conn):
+        self._conn = conn
+        self._cursors = []
+
+    def cursor(self, *args, **kwargs):
+        cur = self._conn.cursor(*args, **kwargs)
+        self._cursors.append(cur)
+        return cur
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close_all_cursors(self):
+        for cur in self._cursors:
+            try:
+                # Consume any unread results to prevent pool connection issues
+                try:
+                    while cur.nextset():
+                        pass
+                except Exception:
+                    pass
+                cur.close()
+            except Exception:
+                pass
+        self._cursors.clear()
+
+
 class mysql_ctx:
     """Context manager for thread-safe MySQL queries (read-only).
 
-    Returns a connection with dictionary cursors.
+    Returns a connection wrapper that tracks and auto-closes cursors.
     Usage:
         with mysql_ctx() as conn:
             cur = conn.cursor(dictionary=True)
@@ -63,20 +92,23 @@ class mysql_ctx:
     """
 
     def __enter__(self):
-        self.conn = _get_pool().get_connection()
-        return self.conn
+        conn = _get_pool().get_connection()
+        self.wrapper = PooledConnectionWrapper(conn)
+        return self.wrapper
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        try:
-            if self.conn and self.conn.is_connected():
-                self.conn.consume_results()
-        except Exception:
-            pass
-        try:
-            if self.conn:
-                self.conn.close()
-        except Exception:
-            pass
+        if hasattr(self, 'wrapper'):
+            self.wrapper.close_all_cursors()
+            try:
+                if self.wrapper._conn and self.wrapper._conn.is_connected():
+                    self.wrapper._conn.consume_results()
+            except Exception:
+                pass
+            try:
+                if self.wrapper._conn:
+                    self.wrapper._conn.close()
+            except Exception:
+                pass
 
 def get_mysql_connection():
     """Return an active MySQL connection for future use.
@@ -93,15 +125,11 @@ def test_mysql_connection():
     """
     try:
         # Make sure we can connect and run a lightweight query.
-        conn = get_mysql_connection()
-        try:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
             cur.execute("SELECT 1;")
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            cur.fetchall()
+
 
         # Database name (best-effort; should match MYSQL_DATABASE)
         db_name = MYSQL_DATABASE
