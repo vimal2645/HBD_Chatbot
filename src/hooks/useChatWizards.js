@@ -129,53 +129,53 @@ export function useChatWizards({
   const handleWizardSend = async (text, trans) => {
     const lang = currentLanguage || 'en';
     const cleanText = text.trim().toLowerCase();
-    // Check for Resume Command
-    if (cleanText === 'resume') {
-      const saved = localStorage.getItem('resumable_wizard');
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          setFlowMode(parsed.flowMode);
-          setWizardStep(parsed.wizardStep);
-          setWizardData(parsed.wizardData);
-          if (parsed.wizardStepsList) {
-            setWizardStepsList(parsed.wizardStepsList);
-          }
-          setLocalMessages(prev => [
-            ...prev,
-            { id: Date.now(), role: 'bot', type: 'text', content: "🔄 Resuming onboarding wizard. Let's continue!" },
-            { id: Date.now() + 1, role: 'bot', type: 'text', content: parsed.currentPrompt }
-          ]);
-          return true;
-        } catch (e) {
-          console.error("Resume error:", e);
-        }
-      }
-      setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: "No paused wizard session was found." }]);
-      return true;
-    }
+    // // Check for Resume Command
+    // if (cleanText === 'resume') {
+    //   const saved = localStorage.getItem('resumable_wizard');
+    //   if (saved) {
+    //     try {
+    //       const parsed = JSON.parse(saved);
+    //       setFlowMode(parsed.flowMode);
+    //       setWizardStep(parsed.wizardStep);
+    //       setWizardData(parsed.wizardData);
+    //       if (parsed.wizardStepsList) {
+    //         setWizardStepsList(parsed.wizardStepsList);
+    //       }
+    //       setLocalMessages(prev => [
+    //         ...prev,
+    //         { id: Date.now(), role: 'bot', type: 'text', content: "🔄 Resuming onboarding wizard. Let's continue!" },
+    //         { id: Date.now() + 1, role: 'bot', type: 'text', content: parsed.currentPrompt }
+    //       ]);
+    //       return true;
+    //     } catch (e) {
+    //       console.error("Resume error:", e);
+    //     }
+    //   }
+    //   setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: "No paused wizard session was found." }]);
+    //   return true;
+    // }
 
-    // Cancel / Exit state saving
-    if (cleanText === 'cancel' || cleanText === 'exit' || cleanText === 'quit' || cleanText === 'reset') {
-      if (flowMode === 'ADD_WIZARD' || flowMode === 'ADD_PRODUCT' || flowMode === 'ADD_DEAL') {
-        const activeSteps = flowMode === 'ADD_WIZARD' ? wizardStepsList : (flowMode === 'ADD_PRODUCT' ? getAddProductSteps(trans) : getAddDealSteps(trans));
-        const currentPrompt = activeSteps[wizardStep]?.promptKey ? (trans[activeSteps[wizardStep].promptKey] || activeSteps[wizardStep].promptKey) : activeSteps[wizardStep]?.prompt;
-        localStorage.setItem('resumable_wizard', JSON.stringify({
-          flowMode,
-          wizardStep,
-          wizardData,
-          wizardStepsList: flowMode === 'ADD_WIZARD' ? wizardStepsList : null,
-          currentPrompt
-        }));
-      }
-      setFlowMode('QUERY');
-      setWizardStep(0);
-      setWizardData({});
-      setPendingUpdateField(null);
-      removeThinking();
-      setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: trans.wizard_canceled || "Wizard paused. You can resume at any time by typing 'resume'." }]);
-      return true;
-    }
+    // // Cancel / Exit state saving
+    // if (cleanText === 'cancel' || cleanText === 'exit' || cleanText === 'quit' || cleanText === 'reset') {
+    //   if (flowMode === 'ADD_WIZARD' || flowMode === 'ADD_PRODUCT' || flowMode === 'ADD_DEAL') {
+    //     const activeSteps = flowMode === 'ADD_WIZARD' ? wizardStepsList : (flowMode === 'ADD_PRODUCT' ? getAddProductSteps(trans) : getAddDealSteps(trans));
+    //     const currentPrompt = activeSteps[wizardStep]?.promptKey ? (trans[activeSteps[wizardStep].promptKey] || activeSteps[wizardStep].promptKey) : activeSteps[wizardStep]?.prompt;
+    //     localStorage.setItem('resumable_wizard', JSON.stringify({
+    //       flowMode,
+    //       wizardStep,
+    //       wizardData,
+    //       wizardStepsList: flowMode === 'ADD_WIZARD' ? wizardStepsList : null,
+    //       currentPrompt
+    //     }));
+    //   }
+    //   setFlowMode('QUERY');
+    //   setWizardStep(0);
+    //   setWizardData({});
+    //   setPendingUpdateField(null);
+    //   removeThinking();
+    //   setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: trans.wizard_canceled || "Wizard paused. You can resume at any time by typing 'resume'." }]);
+    //   return true;
+    // }
 
     if (flowMode === 'UPDATE_VALUE') {
       if (pendingUpdateField === 'phone_number') {

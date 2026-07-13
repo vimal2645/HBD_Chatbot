@@ -438,7 +438,6 @@ const ChatArea = (props) => {
     if (e) e.preventDefault();
     const text = (overrideText || inputText).trim();
     if (!text || isThinking) return;
-
     setInputText('');
     setLocalMessages(prev => [...prev, { id: Date.now(), role: 'user', type: 'text', content: text }]);
     setMsgHistory(prev => prev[prev.length - 1] === text ? prev : [...prev, text]);
@@ -604,7 +603,7 @@ const ChatArea = (props) => {
       });
       return;
     }
-
+    
     if (action === 'delete_business') {
       if (window.confirm("Are you sure you want to permanently delete this business listing? This will also delete all products and deals associated with it.")) {
         setThinkingStatus('Deleting business listing...');
@@ -678,6 +677,22 @@ const ChatArea = (props) => {
       setWizardData(prev => ({...prev, email: ''}));
       setWizardStep(1);
       setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: '📧 Please enter your email address again.'}]);
+      return;
+    }
+
+    if (action === "cancel_wizard") {
+      setFlowMode("QUERY");
+      setWizardStep(0);
+      setWizardData({});
+      setPendingUpdateField(null);
+      setLocalMessages(prev => [
+        ...prev,
+        {
+            id: crypto.randomUUID(),
+            role: "bot",
+            type: "text",
+            content: "✅ Setup cancelled."
+        }]);
       return;
     }
 
@@ -1177,6 +1192,8 @@ const ChatArea = (props) => {
             flexShrink: 0,
           }}
         >
+        {(flowMode === "ADD_WIZARD" || flowMode === "ADD_PRODUCT" || flowMode === "ADD_DEAL" || flowMode === "UPDATE_VALUE") && ( <div style={{display: "flex", gap: "10px", padding: "10px 14px", overflowX: "auto", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-primary)"}}> <button type="button" onClick={() => handleAction("cancel_wizard")} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff";}} onMouseLeave={(e) => {e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)";}} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)";}} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)";}}> ❌ Cancel Setup </button></div>)}
+        
         <div style={{display: "flex", gap: "10px", padding: "10px 14px", overflowX: "auto", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-primary)"}}>
           <button type="button" onClick={() => handleAction('add_new_business')} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff";}} onMouseLeave={(e) => {e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)";}} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)";}} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)";}}>➕ Add Business</button>
           <button type="button" onClick={() => handleAction('search')} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff";}} onMouseLeave={(e) => {e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)";}} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)";}} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)";}}>🏢 My Businesses</button>
