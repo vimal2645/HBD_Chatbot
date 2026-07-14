@@ -338,10 +338,15 @@ function ProductCard({ prod, onAction }) {
 
       {/* Card Body */}
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
           <span className="badge badge-primary" style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase' }}>
             {category}
           </span>
+          {prod.marketplace_name && (
+            <span style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase', background: '#e0e7ff', color: '#4338ca', borderRadius: 'var(--radius-full)' }}>
+              {prod.marketplace_name}
+            </span>
+          )}
           {brand && (
             <span style={{ fontSize: '0.65rem', fontWeight: 600, color: 'var(--text-muted)' }}>
               by {brand}
@@ -640,6 +645,11 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
           <span className="badge badge-primary" style={{ fontSize: '0.625rem', fontWeight: 700, padding: '2px 8px' }}>
             {biz.business_category || 'Business'}
           </span>
+          {biz.source && (
+            <span style={{ fontSize: '0.625rem', fontWeight: 700, padding: '2px 8px', background: '#fce7f3', color: '#be185d', borderRadius: 'var(--radius-full)' }}>
+              {biz.source}
+            </span>
+          )}
           <span style={{
             fontSize: '0.625rem',
             fontWeight: 700,

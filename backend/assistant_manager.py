@@ -210,6 +210,65 @@ BUSINESS_KEYWORDS = [
     "clothing", "garment",
 ]
 
+PRODUCT_KEYWORDS = [
+    "fruits", "fruit", "vegetables", "vegetable", "milk", "bread", "eggs", "groceries", "grocery",
+    "rice", "wheat", "flour", "oil", "sugar", "salt", "spices", "tea", "coffee", "beverage", "beverages",
+    "juice", "water", "soft drink", "soft drinks", "soda", "chips", "snacks", "snack", "chocolate", "chocolates",
+    "biscuit", "biscuits", "cookie", "cookies", "shampoo", "soap", "toothpaste", "detergent", "cleaner",
+    "perfume", "deodorant", "cosmetics", "makeup", "skin care", "hair care", "shoes", "shoe", "clothing",
+    "shirt", "tshirt", "t-shirt", "jeans", "pants", "dress", "saree", "watch", "watches", "phone", "phones",
+    "mobile", "mobiles", "laptop", "laptops", "computer", "computers", "tablet", "tablets", "headphone",
+    "headphones", "earbuds", "speaker", "speakers", "camera", "cameras", "television", "tv", "appliances",
+    "refrigerator", "fridge", "microwave", "oven", "washing machine", "ac", "air conditioner", "fan", "cooler",
+    "iron", "geyser", "heater", "vacuum", "books", "book", "toy", "toys", "game", "games", "bag", "bags",
+    "luggage", "wallet", "wallets", "sunglasses", "eyewear", "jewelry", "jewellery", "gold", "silver", "diamond",
+    "ring", "necklace", "earrings", "bangles", "gift", "gifts", "flower", "flowers", "cake", "cakes", "sweets",
+    "sweet", "ice cream", "pizza", "burger", "sandwich", "pasta", "noodle", "noodles", "sauce", "ketchup",
+    "cheese", "butter", "paneer", "curd", "yogurt", "cream", "ghee", "honey", "jam", "spread", "cereal",
+    "oats", "muesli", "cornflakes", "soap", "conditioner", "lotion", "oil", "face wash", "body wash", "hand wash",
+    "sanitizer", "mask", "medicine", "medicines", "tablet", "tablets", "capsule", "capsules", "syrup", "ointment"
+]
+
+# ---------------------------------------------------------------------------
+# Marketplace entity map — keyword → normalized marketplace_name in product_master
+# ---------------------------------------------------------------------------
+MARKETPLACE_MAP = {
+    # Blinkit
+    "blinkit": "Blinkit", "blink it": "Blinkit", "grofers": "Blinkit",
+    # Zepto
+    "zepto": "Zepto",
+    # BigBasket
+    "bigbasket": "BigBasket", "big basket": "BigBasket", "bb": "BigBasket",
+    # Amazon
+    "amazon": "Amazon", "amazon india": "Amazon",
+    # Flipkart
+    "flipkart": "Flipkart", "flip kart": "Flipkart",
+    # JioMart
+    "jiomart": "JioMart", "jio mart": "JioMart", "jio": "JioMart",
+    # DMart
+    "dmart": "DMart", "d-mart": "DMart", "d mart": "DMart",
+    # IndiaMART
+    "indiamart": "IndiaMART", "india mart": "IndiaMART", "indiamart.com": "IndiaMART",
+    # Instamart (Swiggy)
+    "instamart": "Instamart", "swiggy instamart": "Instamart",
+}
+
+# ---------------------------------------------------------------------------
+# Listing source entity map — keyword → normalized source name in listing tables
+# ---------------------------------------------------------------------------
+LISTING_SOURCE_MAP = {
+    "justdial": "justdial", "just dial": "justdial", "jd": "justdial",
+    "google maps": "google_map", "google map": "google_map", "gmaps": "google_map",
+    "heyplaces": "heyplaces", "hey places": "heyplaces",
+    "magicpin": "magicpin", "magic pin": "magicpin",
+    "nearbuy": "nearbuy", "near buy": "nearbuy",
+    "asklaila": "asklaila", "ask laila": "asklaila",
+    "yellow pages": "yellow_pages", "yellowpages": "yellow_pages",
+    "freelisting": "freelisting", "free listing": "freelisting",
+    "businesses": "businesses", "business": "businesses",
+    "google maps master": "g_map_master_table", "google map master": "g_map_map_master_table", "g map master": "g_map_master_table", "g_map_master_table": "g_map_master_table",
+}
+
 
 def _apply_typos(q: str) -> str:
     words = q.split()
@@ -255,12 +314,56 @@ def parse_query_nlu(user_query: str, language: str = "en", history: list = None)
     if "compare" in q_lower or " vs " in q_lower or " versus " in q_lower:
         return {"intents": ["Comparison"], "confidence": 1.0, "entities": {}}
 
-    # 4. Product search intent
-    is_product = any(w in q_lower for w in [
-        "product", "products", "item", "items", "buy", "price of", "cost of",
-    ])
+    # 4. Product search intent — must match specific product-related contexts
+    #    Avoid false positives: "buying property", "items on the menu", "cost of living"
+    PRODUCT_STRONG_SIGNALS = [
+        "product", "products",
+        "buy online", "order online", "purchase",
+        "price of ", "cost of ", "how much does",
+        "on amazon", "on flipkart", "on blinkit", "on zepto",
+        "on bigbasket", "on jiomart", "on dmart",
+        "marketplace", "e-commerce", "ecommerce",
+        "add to cart", "checkout",
+    ]
+    is_product = any(w in q_lower for w in PRODUCT_STRONG_SIGNALS)
 
-    # 5. Extract City — longest match wins
+    # Check against PRODUCT_KEYWORDS list to improve detection
+    if not is_product:
+        for p_kw in PRODUCT_KEYWORDS:
+            if re.search(rf"\b{p_kw}\b", q_lower):
+                is_product = True
+                break
+
+    # If it contains physical store-related indicators, demote product search
+    BUSINESS_STRONG_SIGNALS = [
+        " store", " shop", " market", " show room", " showroom", " center", " centre", " hospital", " clinic",
+        " school", " college", " hotel", " restaurant", " cafe", " spa", " salon", " gym", " service",
+        " dealer", " distributor", " manufacturer", " supplier", " listing", " business", " company", " office",
+        " near me", " nearby", " in ", " at ", "address", "phone number", "reviews", "ratings"
+    ]
+    if is_product:
+        if any(w in q_lower for w in BUSINESS_STRONG_SIGNALS):
+            is_product = False
+
+    # 5. Marketplace extraction (e.g. "Blinkit products", "buy on Amazon")
+    marketplace = None
+    for kw, norm in MARKETPLACE_MAP.items():
+        if kw in q_lower:
+            marketplace = norm
+            # Marketplace mention = strong product signal
+            is_product = True
+            break
+
+    # 6. Listing source extraction (e.g. "restaurants on JustDial")
+    listing_source = None
+    for kw, norm in LISTING_SOURCE_MAP.items():
+        if kw in q_lower:
+            listing_source = norm
+            # Listing source mention = business search, not product
+            is_product = False
+            break
+
+    # 7. Extract City — longest match wins
     city = None
     if "india" in q_lower:
         city = "india"
@@ -270,7 +373,7 @@ def parse_query_nlu(user_query: str, language: str = "en", history: list = None)
                 city = c
                 break
 
-    # 6. Extract Category — cache first, then keyword fallback
+    # 8. Extract Category — cache first, then keyword fallback
     category = None
     for cat in sorted(CATEGORIES_CACHE, key=len, reverse=True):
         if cat and len(cat) >= 3 and cat.lower() in q_lower:
@@ -282,7 +385,7 @@ def parse_query_nlu(user_query: str, language: str = "en", history: list = None)
                 category = k.capitalize()
                 break
 
-    # 7. Extract Area — skip if same as city
+    # 9. Extract Area — skip if same as city
     area = None
     for a in sorted(AREAS_CACHE, key=len, reverse=True):
         if not a or len(a.strip()) < 3:
@@ -293,7 +396,7 @@ def parse_query_nlu(user_query: str, language: str = "en", history: list = None)
             area = a
             break
 
-    # 8. Extract filters
+    # 10. Extract filters
     filters = {
         "open_now": any(w in q_lower for w in ["open now", "open today", "working hour", "timing", "open 24"]),
         "veg": any(w in q_lower for w in ["veg", "vegetarian", "pure veg"]),
@@ -307,7 +410,7 @@ def parse_query_nlu(user_query: str, language: str = "en", history: list = None)
         "takeaway": any(w in q_lower for w in ["takeaway", "take away", "take out", "parcel"]),
     }
 
-    # 9. Extract ranking intent
+    # 11. Extract ranking intent
     ranking = None
     if any(w in q_lower for w in ["best", "top", "highest rated", "top rated", "star rating"]):
         ranking = "highest_rated"
@@ -333,6 +436,8 @@ def parse_query_nlu(user_query: str, language: str = "en", history: list = None)
             "location": {"city": city, "area": area},
             "ranking": ranking,
             "filters": filters,
+            "marketplace": marketplace,
+            "listing_source": listing_source,
         },
         "need_clarification": False,
         "clarification_message": None,
@@ -417,7 +522,8 @@ def generate_conversational_summary_and_chips(
     query: str,
     results: list,
     language: str = "en",
-    history: list = None
+    history: list = None,
+    marketplace: str = None,
 ) -> dict:
     """
     Generate a conversational summary + smart follow-up chips
@@ -453,8 +559,12 @@ def generate_conversational_summary_and_chips(
         rating = float(first.get("stars") or first.get("ratings") or 0)
         reviews = int(first.get("reviews") or first.get("reviews_count") or 0)
         category = (first.get("category_name") or "product").lower()
+        result_marketplace = marketplace or first.get("marketplace_name") or ""
 
-        summary = f"I found **{count} product(s)** matching your search.\n\n"
+        summary = f"I found **{count} product(s)**"
+        if result_marketplace:
+            summary += f" on **{result_marketplace}**"
+        summary += " matching your search.\n\n"
         summary += f"🏆 **Top Pick:** **{name}**"
         if brand:
             summary += f" by *{brand}*"
@@ -466,13 +576,31 @@ def generate_conversational_summary_and_chips(
             summary += f" ({reviews} reviews)"
         summary += "\n\nHere are some ways to refine your search:"
 
+        # Context-aware product chips
         suggs = [
             f"⭐ Top Rated {category.capitalize()}",
             f"💰 Budget {category.capitalize()} Options",
             f"🏆 Best Seller {category.capitalize()}",
-            "🛍️ Browse Product Categories",
-            "🔄 Start New Search",
         ]
+
+        # If no marketplace filter, show marketplace-specific suggestions
+        if not result_marketplace:
+            suggs += [
+                "🛒 Amazon Products",
+                "🟡 Blinkit Products",
+                "🟢 BigBasket Products",
+                "🔵 Flipkart Products",
+            ]
+        else:
+            # Within a marketplace, suggest cross-platform comparison
+            suggs += [
+                f"🆚 Compare with Amazon",
+                f"🆚 Compare with Flipkart",
+                "🛍️ Browse All Marketplaces",
+            ]
+
+        suggs += ["🛍️ Browse Product Categories", "🔄 Start New Search"]
+
     else:
         # ── Business summary ───────────────────────────────────────────────────
         name = first.get("business_name") or first.get("name") or "a verified listing"
@@ -481,6 +609,7 @@ def generate_conversational_summary_and_chips(
         phone = first.get("phone_number") or first.get("primary_phone") or "N/A"
         city = (first.get("city") or "this city").title()
         category = (first.get("business_category") or "business").lower()
+        source = first.get("source", "")
 
         if count == 1:
             summary = (
@@ -492,6 +621,9 @@ def generate_conversational_summary_and_chips(
                 f"I found **{count} '{category}' listings** in **{city}** matching your search.\n\n"
                 f"🏆 **Top Pick:** **{name}**"
             )
+
+        if source:
+            summary += f" *(via {source})*"
 
         try:
             if rating and float(rating) > 0:
@@ -520,21 +652,25 @@ def generate_conversational_summary_and_chips(
 
         cat_lower = category.lower()
         if any(w in cat_lower for w in ["restaurant", "cafe", "food", "bakery", "dhaba", "dine"]):
-            suggs += ["🥗 Pure Veg Only", "⏰ Open Now", "👨‍👩‍👧 Family Friendly"]
+            suggs += ["🥗 Pure Veg Only", "⏰ Open Now", "👨‍👩‍👧 Family Friendly", "💰 Budget Dining"]
             if "cafe" in cat_lower:
                 suggs.append("📶 Cafes with Wi-Fi")
         elif any(w in cat_lower for w in ["hotel", "resort", "lodge", "hostel", "stay"]):
-            suggs += ["💰 Budget Hotels", "🏨 Luxury Hotels", "🅿️ With Parking"]
+            suggs += ["💰 Budget Hotels", "🏨 Luxury Hotels", "🅿️ With Parking", "🌐 Free Wi-Fi Hotels"]
         elif any(w in cat_lower for w in ["gym", "fitness", "yoga", "aerobics"]):
-            suggs += ["⏰ Open Now", "🌙 24x7 Gyms", "🏆 Highest Rated"]
+            suggs += ["⏰ Open Now", "🌙 24x7 Gyms", "🏆 Highest Rated", "👩 Women's Only Gyms"]
         elif any(w in cat_lower for w in ["hospital", "clinic", "doctor", "medical"]):
-            suggs += ["🚨 Emergency Services", "⭐ Top Rated Hospitals", "⏰ Open Now"]
+            suggs += ["🚨 Emergency Services", "⭐ Top Rated Hospitals", "⏰ Open Now", "🩺 Multi-Speciality"]
         elif any(w in cat_lower for w in ["salon", "spa", "beauty", "parlour"]):
-            suggs += ["⭐ Top Rated Salons", "💰 Budget Salons", "⏰ Open Now"]
+            suggs += ["⭐ Top Rated Salons", "💰 Budget Salons", "⏰ Open Now", "👰 Bridal Salons"]
         elif any(w in cat_lower for w in ["school", "college", "coaching", "institute"]):
-            suggs += ["⭐ Top Rated Schools", "🏫 CBSE Schools", "🏫 ICSE Schools"]
+            suggs += ["⭐ Top Rated Schools", "🏫 CBSE Schools", "🏫 ICSE Schools", "📚 Coaching Centers"]
+        elif any(w in cat_lower for w in ["bank", "atm", "finance"]):
+            suggs += ["🏧 ATMs Nearby", "🏦 Public Sector Banks", "🏦 Private Banks", "⏰ Open Now"]
+        elif any(w in cat_lower for w in ["pharmacy", "chemist", "medical store"]):
+            suggs += ["⏰ Open 24 Hours", "⭐ Top Rated", "🚨 Emergency Pharmacy"]
         else:
-            suggs += ["⏰ Open Now", "💰 Budget Friendly", "⭐ Top Rated"]
+            suggs += ["⏰ Open Now", "💰 Budget Friendly", "⭐ Top Rated", "📍 Change Area"]
 
         related = _get_related_categories(category)
         if related:
