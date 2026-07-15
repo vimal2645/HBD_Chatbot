@@ -137,7 +137,8 @@ const ChatArea = (props) => {
           setAutocompleteOptions(res.suggestions);
         }
       } catch (err) {
-        console.error("Autocomplete error:", err);
+        // Silently ignore autocomplete errors (404, network, etc.)
+        setAutocompleteOptions([]);
       }
     }, 300);
     return () => clearTimeout(delayDebounce);
@@ -168,6 +169,17 @@ const ChatArea = (props) => {
       startNewSession();
     }
   }, [isLoggedIn, session, currentSessionId, startNewSession, getUserId]);
+
+  // ── AUTO-SYNC SELECTED BUSINESS STATE ─────────────────
+  useEffect(() => {
+    if (session && session.businessId && (!selectedBusiness || selectedBusiness.global_business_id !== session.businessId)) {
+      setSelectedBusiness({
+        global_business_id: session.businessId,
+        business_name: session.businessName || "My Business",
+        city: session.city || ""
+      });
+    }
+  }, [session, selectedBusiness]);
 
   // ── HEALTH CHECK ──────────────────────────────────────
   const checkHealth = useCallback(async () => {
@@ -739,22 +751,39 @@ const ChatArea = (props) => {
         await handleDeleteSession(null, currentSessionId);
       }
       setShowResetConfirm(false);
+      // Restore the EXACT same welcome message as the initial load
       setLocalMessages([
-        {
-          id: 'init',
-          role: 'bot',
-          type: 'explore_welcome',
-          content: trans.chat_cleared || '👋 Chat cleared. Welcome back!',
+        { 
+          id: 'init', 
+          role: 'bot', 
+          type: 'faq', 
+          content: "👋 Welcome to HoneyBee Digital!\n\nI'm your AI Customer Support Assistant.\n\nI can help you explore businesses, products and other information available in our database.\n\nHow can I help you today?",
           suggestions: [
-            { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
-            { title: '🛍️ Products', action: 'query_rewrite', query: 'explore products' }
+            { title: "🏢 Explore Listings", action: "query_rewrite", query: "Explore Listings" },
+            { title: "📦 Browse Products", action: "query_rewrite", query: "Browse Products" },
+            { title: "📂 Browse Categories", action: "query_rewrite", query: "Browse Categories" },
+            { title: "📍 Browse Locations", action: "query_rewrite", query: "Browse Locations" },
+            { title: "⭐ Top Rated Businesses", action: "query_rewrite", query: "Top Rated Businesses" },
+            { title: "🔥 Trending Products", action: "query_rewrite", query: "Trending Products" },
+            { title: "🆕 Recently Added", action: "query_rewrite", query: "Recently Added" },
+            { title: "❓ Help", action: "query_rewrite", query: "Help" }
           ]
         }
       ]);
+      // Reset ALL local state
       setResetConfirmCount(0);
       setFlowMode('QUERY');
       setWizardStep(0);
       setWizardData({});
+      setCompareList([]);
+      setComparisonData([]);
+      setIsCompareOpen(false);
+      setIsComparingLoading(false);
+      setSelectedBusiness(null);
+      setOtpResent(false);
+      setAutocompleteOptions([]);
+      setShowAutocomplete(false);
+      setInputText('');
       return;
     }
     if (action !== 'reset_chat') setResetConfirmCount(0);

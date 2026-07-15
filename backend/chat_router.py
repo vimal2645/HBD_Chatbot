@@ -1,13 +1,11 @@
 import json
 import re
 import anyio
-import sqlite3
 from typing import Optional
 from fastapi import HTTPException
 
 from pydantic import BaseModel
 from mysql_pool import mysql_ctx
-from db_pool import db_context
 from assistant_manager import (
     parse_query_nlu,
     generate_conversational_summary_and_chips,
@@ -16,7 +14,6 @@ from assistant_manager import (
     is_greeting,
     CITIES_CACHE, CATEGORIES_CACHE, AREAS_CACHE
 )
-from db_pool import pool
 
 BIZ_TABLE = "chatbot_add_business"  # MySQL remote table
 PRODUCT_TABLE = "chatbot_products"
@@ -51,9 +48,83 @@ from api import (
     map_product_fields,
     query_local_businesses,
     count_local_businesses,
-    DATABASE_URL,
-    search_cache
+    query_all_listing_sources,
+    search_cache,
+    rewrite_query_with_context
 )
+
+
+
+def clean_query_term(term: str, marketplace: str = None, listing_source: str = None) -> str:
+    if not term:
+        return ""
+    t = term.lower()
+    
+    # 1. Words to remove: prepositions, common actions, and search keywords
+    words_to_remove = {
+        "on", "in", "at", "from", "for", "with", "buy", "show", "search", "find", 
+        "order", "online", "listings", "listing", "products", "product", "items", "item", "any", "all"
+    }
+    
+    # 2. Add marketplace variations to remove list
+    if marketplace:
+        words_to_remove.add(marketplace.lower())
+        if marketplace.lower() == "blinkit":
+            words_to_remove.update(["blink", "it", "grofers"])
+        elif marketplace.lower() == "bigbasket":
+            words_to_remove.update(["big", "basket", "bb"])
+        elif marketplace.lower() == "jiomart":
+            words_to_remove.update(["jio", "mart"])
+        elif marketplace.lower() == "dmart":
+            words_to_remove.update(["d", "mart"])
+        elif marketplace.lower() == "indiamart":
+            words_to_remove.update(["india", "mart"])
+            
+    # 3. Add listing source variations to remove list
+    if listing_source:
+        words_to_remove.add(listing_source.lower())
+        if listing_source.lower() == "google_map":
+            words_to_remove.update(["google", "map", "maps", "gmaps"])
+        elif listing_source.lower() == "yellow_pages":
+            words_to_remove.update(["yellow", "pages", "yellowpages"])
+        elif listing_source.lower() == "justdial":
+            words_to_remove.update(["just", "dial", "jd"])
+            
+    # Remove punctuation
+    import string
+    for char in string.punctuation:
+        t = t.replace(char, " ")
+        
+    parts = t.split()
+    clean_parts = [p for p in parts if p not in words_to_remove]
+    return " ".join(clean_parts).strip()
+
+
+def get_intelligent_followup_question(category: str, city: str, is_product: bool, results: list, marketplace: str = None) -> str:
+    cat = (category or "business").lower()
+    city_str = f" in {city.title()}" if city else ""
+    mkt_str = f" on {marketplace}" if marketplace else ""
+    
+    if not results:
+        if is_product:
+            return "Would you like to search for another product, browse popular categories, or try a different marketplace?"
+        else:
+            return f"Would you like to search for {cat} in another city or try a different category?"
+            
+    # We have results
+    if is_product:
+        top_item = results[0].get("product_name", "this product")
+        if len(top_item) > 30:
+            top_item = top_item[:27] + "..."
+        if mkt_str:
+            return f"Would you like to see reviews for **{top_item}**, check for other brands, or compare prices across other marketplaces?"
+        else:
+            return f"Would you like to compare **{top_item}** with similar items, filter by budget, or search on a specific marketplace like Amazon or Blinkit?"
+    else:
+        top_item = results[0].get("business_name", "this business")
+        if len(top_item) > 30:
+            top_item = top_item[:27] + "..."
+        return f"Would you like to see contact details for **{top_item}**, view more high-rated {cat}s{city_str}, or check which ones are open right now?"
 
 
 def _build_context_chips(category: str, city: str, flow_state: str = "EXPLORING_BIZ") -> list:
@@ -160,18 +231,33 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
     last_meta = (_get_last_search_metadata_internal(chat_session_id) or {}) if chat_session_id else {}
     flow_state = last_meta.get("flow_state", "START") if last_meta else "START"
 
-    # Reset commands always restart from START
-    reset_keywords = ["start new search", "reset chat", "hi", "hello", "home", "menu", "explore products", "explore business", "explore business listings"]
-    if q_lower in reset_keywords or "explore products" in q_lower or "explore business" in q_lower:
+    # Reset commands — ONLY explicit reset commands restart from START
+    # Greetings ('hi', 'hello') are handled conversationally mid-conversation
+    reset_keywords = [
+        "start new search", "reset chat", "home", "menu",
+        "explore products", "browse products", "shop products",
+        "explore business", "business listing", "explore listings", "browse listings",
+        "browse categories", "all categories", "show categories",
+        "browse locations", "explore locations", "change city", "all cities"
+    ]
+    is_explicit_reset = any(k in q_lower for k in reset_keywords)
+    is_greeting_at_start = flow_state == "START" and is_greeting(req.query)
+
+    if is_explicit_reset:
         flow_state = "START"
         last_meta = {}  # Clear previous context
+    elif is_greeting_at_start:
+        flow_state = "START"  # Only reset if already at START
 
     # -------------------------------------------------------------------------
     # STATE: START (Entry Point) — show greeting or route branch
     # -------------------------------------------------------------------------
     if flow_state == "START" or q_lower == "start new search":
-        # Business Listings branch
-        if any(x in q_lower for x in ["business listing", "listings", "explore business"]):
+        # Business Listings branch — handle all forms of 'explore listings'
+        if any(x in q_lower for x in [
+            "business listing", "listings", "explore business", "explore listing",
+            "browse listing", "all listings", "show listings", "list businesses"
+        ]):
             with mysql_ctx() as conn:
                 cur = conn.cursor(dictionary=True)
                 cur.execute("SELECT city_name FROM Top_cities_rank ORDER BY city_rank ASC, business_count DESC LIMIT 12")
@@ -196,19 +282,29 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
                 _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
             return resp
         
-        # Products branch
-        elif any(x in q_lower for x in ["products", "shop", "buy", "item"]):
+        # Products branch — handle all forms of 'explore products'
+        elif any(x in q_lower for x in [
+            "explore products", "browse products", "shop products", "buy products",
+            "products", "shop online", "buy online", "marketplace", "search products"
+        ]):
             with mysql_ctx() as conn:
                 cur = conn.cursor(dictionary=True)
                 cur.execute("SELECT DISTINCT category_name FROM product_master WHERE category_name IS NOT NULL AND category_name != '' LIMIT 14")
                 prod_cats = [row["category_name"] for row in cur.fetchall() if row["category_name"]]
 
             prod_chips = [{"title": c, "action": "query_rewrite", "query": c} for c in prod_cats[:12]]
+            # Add marketplace chips
+            prod_chips += [
+                {"title": "🛍️ Amazon", "action": "query_rewrite", "query": "Amazon products"},
+                {"title": "🟡 Blinkit", "action": "query_rewrite", "query": "Blinkit products"},
+                {"title": "🟢 BigBasket", "action": "query_rewrite", "query": "BigBasket products"},
+                {"title": "🔵 Flipkart", "action": "query_rewrite", "query": "Flipkart products"},
+            ]
             prod_chips.append({"title": "🔍 Search Any Product", "action": "query_rewrite", "query": "Any Product"})
 
             resp = {
                 "type": "flow_step",
-                "data": "🛍️ **What product are you looking for?** Choose a category or type a product name:",
+                "data": "🛍️ **What product are you looking for?** Choose a category, marketplace or type a product name:",
                 "suggestions": prod_chips,
                 "search_metadata": {"flow_state": "AWAITING_QUERY_FOR_PROD"}
             }
@@ -216,9 +312,43 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
                 _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
             return resp
 
+        # Browse Categories branch
+        elif any(x in q_lower for x in ["browse categor", "browse all categor", "show categor", "all categor"]):
+            with mysql_ctx() as conn:
+                cur = conn.cursor(dictionary=True)
+                cur.execute("SELECT category_name FROM Top_categories_rank ORDER BY category_rank ASC LIMIT 16")
+                top_cats = [row["category_name"] for row in cur.fetchall() if row["category_name"]]
+            cat_chips = [{"title": c, "action": "query_rewrite", "query": f"best {c}s near me"} for c in top_cats]
+            resp = {
+                "type": "flow_step",
+                "data": "📂 **Browse by Category** — Select what you're looking for:",
+                "suggestions": cat_chips,
+                "search_metadata": {"flow_state": "AWAITING_QUERY_FOR_BIZ"}
+            }
+            if chat_session_id:
+                _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+            return resp
+
+        # Browse Locations branch
+        elif any(x in q_lower for x in ["browse location", "explore location", "all cities", "show cities", "all city", "change city"]):
+            with mysql_ctx() as conn:
+                cur = conn.cursor(dictionary=True)
+                cur.execute("SELECT city_name FROM Top_cities_rank ORDER BY city_rank ASC LIMIT 16")
+                top_cities = [row["city_name"] for row in cur.fetchall() if row["city_name"]]
+            city_chips = [{"title": c, "action": "query_rewrite", "query": f"businesses in {c}"} for c in top_cities]
+            resp = {
+                "type": "flow_step",
+                "data": "📍 **Browse by City** — Select your location:",
+                "suggestions": city_chips,
+                "search_metadata": {"flow_state": "AWAITING_CITY_FOR_BIZ"}
+            }
+            if chat_session_id:
+                _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+            return resp
+
         else:
             # Greeting or unrecognized → welcome screen
-            if not q_lower or is_greeting(req.query) or q_lower == "start new search":
+            if not q_lower or is_greeting(req.query) or q_lower == "start new search" or q_lower == "reset chat" or q_lower == "reset":
                 resp = {
                     "type": "explore_welcome",
                     "data": "Hi 👋 I'm your **Local Directory Assistant!** What would you like to explore today?",
@@ -336,8 +466,6 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
                     if not selected_business_id:
                         raise HTTPException(400, "No business selected.")
                         
-                    print("Querying:", PRODUCT_TABLE)
-                    print("Business ID:", selected_business_id)
                     cur.execute( f"SELECT * FROM {PRODUCT_TABLE} WHERE business_id = %s", (selected_business_id,))
                         
                     items = cur.fetchall()
@@ -497,6 +625,19 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
             if chat_session_id:
                 _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
             return resp
+        else:
+            resp = {
+                "type": "faq",
+                "data": "I couldn't find a side-by-side comparison for those businesses. Please make sure the business names are spelled correctly and they exist in our directory.",
+                "suggestions": [
+                    {"title": "🏢 Explore Listings", "action": "query_rewrite", "query": "explore business listings"},
+                    {"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"}
+                ],
+                "search_metadata": {"flow_state": "START"}
+            }
+            if chat_session_id:
+                _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+            return resp
 
     cmd_map = {
         "add product": "start_add_product",
@@ -509,50 +650,61 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
     if q_lower in cmd_map:
         return {"type": "command", "command": cmd_map[q_lower]}
 
-    # -------------------------------------------------------------------------
-    # Entity extraction — merge NLU with last session context
-    # -------------------------------------------------------------------------
-    city = entities.get("location", {}).get("city") or last_meta.get("city")
-    category = entities.get("category") or last_meta.get("category")
-    area = entities.get("location", {}).get("area") or last_meta.get("area")
-
-    current_limit = entities.get("limit") or 10
-    current_offset = 0
     is_next = any(w in q_lower for w in ["next", "more", "next results", "show more", "show next"])
     is_prev = any(w in q_lower for w in ["prev", "previous"])
 
-    if is_next and last_meta:
-        current_offset = last_meta.get("offset", 0) + (last_meta.get("limit") or current_limit)
-        current_limit = last_meta.get("limit") or current_limit
-        city = last_meta.get("city") or city
-        category = last_meta.get("category") or category
-        area = last_meta.get("area") or area
-        flow_state = last_meta.get("flow_state", flow_state)
-    elif is_prev and last_meta:
-        current_offset = max(0, last_meta.get("offset", 0) - (last_meta.get("limit") or current_limit))
-        current_limit = last_meta.get("limit") or current_limit
-        city = last_meta.get("city") or city
-        category = last_meta.get("category") or category
-        area = last_meta.get("area") or area
-        flow_state = last_meta.get("flow_state", flow_state)
+    # -------------------------------------------------------------------------
+    # Entity extraction — merge NLU with last session context
+    # -------------------------------------------------------------------------
+    merged_meta = rewrite_query_with_context(req.query, last_meta) if last_meta else None
+    
+    if merged_meta:
+        city = merged_meta.get("city")
+        category = merged_meta.get("category")
+        area = merged_meta.get("area")
+        marketplace = merged_meta.get("marketplace")
+        listing_source = merged_meta.get("listing_source")
+        current_offset = merged_meta.get("offset", 0)
+        current_limit = merged_meta.get("limit", 10)
+        resolved_ranking = merged_meta.get("ranking")
+        flow_state = merged_meta.get("flow_state", flow_state)
+        
+        filters = entities.get("filters", {})
+        if merged_meta.get("open_only"):
+            filters["open_now"] = True
+        if merged_meta.get("veg"):
+            filters["veg"] = True
+        if merged_meta.get("min_rating"):
+            filters["min_rating"] = merged_meta.get("min_rating")
+    else:
+        city = entities.get("location", {}).get("city")
+        category = entities.get("category")
+        area = entities.get("location", {}).get("area")
+        marketplace = entities.get("marketplace")
+        listing_source = entities.get("listing_source")
+        current_offset = 0
+        current_limit = entities.get("limit") or 10
+        
+        ranking_map = {
+            "Budget Search": "budget",
+            "Luxury Search": "luxury",
+            "Highest Rated": "highest_rated",
+            "Most Reviewed": "most_reviewed",
+            "Recently Added": "newest",
+            "Trending": "trending"
+        }
+        resolved_ranking = entities.get("ranking") or ranking_map.get(nlu.get("intents", [""])[0])
+        filters = entities.get("filters", {})
 
-    ranking_map = {
-        "Budget Search": "budget",
-        "Luxury Search": "luxury",
-        "Highest Rated": "highest_rated",
-        "Most Reviewed": "most_reviewed",
-        "Recently Added": "newest",
-        "Trending": "trending"
-    }
-    resolved_ranking = entities.get("ranking") or ranking_map.get(nlu.get("intents", [""])[0])
-    filters = entities.get("filters", {})
-
-    # Detect business search intent
-    if primary_intent == "Business Search" or (category and city):
-        flow_state = "EXPLORING_BIZ"
-
-    if primary_intent == "Product Search":
+    # Detect intent — Product Search and marketplace take priority over business search
+    # This prevents "Smartphones in Mumbai" from routing to business search
+    if primary_intent == "Product Search" or marketplace:
         flow_state = "EXPLORING_PROD"
+    elif listing_source:
+        # Source-specific listing search (e.g. "restaurants on JustDial")
+        flow_state = "EXPLORING_MULTISOURCE_BIZ"
+    elif primary_intent == "Business Search" or (category and city):
+        flow_state = "EXPLORING_BIZ"
 
     # -------------------------------------------------------------------------
     # STATE: AWAITING_QUERY_FOR_BIZ or EXPLORING_BIZ — business search
@@ -585,7 +737,7 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
             category=category,
             city=city,
             area=area,
-            min_rating=None,
+            min_rating=filters.get("min_rating"),
             open_only=filters.get("open_now", False),
             filters=filters,
             ranking_intent=resolved_ranking,
@@ -593,9 +745,27 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
             limit=current_limit
         )
 
+        # ── Multi-source fallback: if master_table returns 0, search all listing tables ──
+        if not results:
+            print(f"[CHAT] master_table returned 0 results for city={city}, category={category} — trying all listing sources")
+            fallback = query_all_listing_sources(
+                category=category,
+                city=city,
+                area=area,
+                limit=current_limit,
+                offset=current_offset,
+                ranking_intent=resolved_ranking,
+            )
+            if fallback:
+                results = fallback
+                print(f"[CHAT] Multi-source fallback found {len(results)} results")
+
         if results or current_offset > 0:
             mapped_results = map_business_fields(results)
             total_count = count_local_businesses(category, city, area=area, filters=filters)
+            # If count from master_table is 0 but we got fallback results, use len(results) as count
+            if total_count == 0 and results:
+                total_count = len(results)
 
             summary_data = await anyio.to_thread.run_sync(
                 generate_conversational_summary_and_chips,
@@ -653,6 +823,73 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
                 _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
             return resp
 
+
+    # -------------------------------------------------------------------------
+    # STATE: EXPLORING_MULTISOURCE_BIZ — source-specific listing search
+    # (e.g. "restaurants on JustDial in Ahmedabad", "hotels on MagicPin")
+    # -------------------------------------------------------------------------
+    if flow_state == "EXPLORING_MULTISOURCE_BIZ":
+        results = query_all_listing_sources(
+            category=category,
+            city=city,
+            area=area,
+            source_filter=listing_source,
+            limit=current_limit,
+            offset=current_offset,
+            ranking_intent=resolved_ranking,
+        )
+
+        if results or current_offset > 0:
+            source_label = results[0]["source"] if results else (listing_source or "all sources")
+            summary_data = await anyio.to_thread.run_sync(
+                generate_conversational_summary_and_chips,
+                req.query, results, lang, chat_history
+            )
+            context_chips = _build_context_chips(category, city, "EXPLORING_BIZ")
+            suggestions = [{"title": s, "action": "query_rewrite", "query": s} for s in context_chips]
+            if len(results) == current_limit:
+                suggestions.insert(0, {"title": "Next 10 Results ⏭️", "action": "next_option", "query": "Show Next 10 Results"})
+            if current_offset > 0:
+                suggestions.append({"title": "Previous Results ⏮️", "action": "prev_option", "query": "Previous Results"})
+
+            resp = {
+                "type": "database",
+                "data": results,
+                "intro": summary_data.get("summary", ""),
+                "prompt": f"Results from {source_label}. Use the filters below:",
+                "suggestions": suggestions,
+                "search_metadata": {
+                    "flow_state": "EXPLORING_MULTISOURCE_BIZ",
+                    "category": category,
+                    "city": city,
+                    "area": area,
+                    "listing_source": listing_source,
+                    "offset": current_offset,
+                    "limit": current_limit,
+                }
+            }
+            if chat_session_id:
+                _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+            return resp
+        else:
+            resp = {
+                "type": "faq",
+                "data": (
+                    f"No listings found on **{listing_source or 'this source'}** for **{category or 'businesses'}**"
+                    + (f" in **{city}**" if city else "") + "."
+                    " Try searching all sources or a different category."
+                ),
+                "suggestions": [
+                    {"title": "🏢 Explore All Listings", "action": "query_rewrite", "query": f"{category or 'businesses'} in {city or 'India'}"},
+                    {"title": "📂 Browse Categories", "action": "query_rewrite", "query": "browse categories"},
+                    {"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"},
+                ],
+                "search_metadata": {"flow_state": "START"}
+            }
+            if chat_session_id:
+                _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+            return resp
+
     # -------------------------------------------------------------------------
     # STATE: AWAITING_QUERY_FOR_PROD or EXPLORING_PROD — product search
     # -------------------------------------------------------------------------
@@ -671,14 +908,19 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
             query_str = "SELECT * FROM product_master WHERE 1=1"
             params = []
 
-            # Product name / brand match (no city filter — product_master has no city column)
-            if product_name and product_name.lower() not in ("any product", ""):
-                query_str += " AND (LOWER(product_name) LIKE %s OR LOWER(brand) LIKE %s OR LOWER(category_name) LIKE %s)"
-                params.extend([f"%{product_name.lower()}%", f"%{product_name.lower()}%", f"%{product_name.lower()}%"])
+            # Marketplace filter (e.g. 'Blinkit products', 'Amazon earphones')
+            if marketplace:
+                query_str += " AND LOWER(marketplace_name) = LOWER(%s)"
+                params.append(marketplace)
 
-            if product_category:
-                query_str += " AND LOWER(category_name) LIKE %s"
-                params.append(f"%{product_category.lower()}%")
+            # Product name / brand match (no city filter — product_master has no city column)
+            raw_term = product_name or product_category or q_lower
+            search_term = clean_query_term(raw_term, marketplace=marketplace)
+            search_term = search_term if search_term and search_term.lower() not in ("any product", "", "all") else None
+            
+            if search_term:
+                query_str += " AND (LOWER(product_name) LIKE %s OR LOWER(brand) LIKE %s OR LOWER(category_name) LIKE %s)"
+                params.extend([f"%{search_term.lower()}%", f"%{search_term.lower()}%", f"%{search_term.lower()}%"])
 
             # Only show available products
             query_str += " AND (availability IS NULL OR LOWER(availability) NOT IN ('out of stock', 'unavailable'))"
@@ -716,6 +958,7 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
                     "product_url": p.get("product_url") or "",
                     "description": (p.get("description") or "")[:200],
                     "is_best_seller": bool(p.get("is_best_seller")),
+                    "marketplace_name": p.get("marketplace_name") or "",
                 })
 
             summary_data = await anyio.to_thread.run_sync(
@@ -725,6 +968,12 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
 
             context_chips = _build_context_chips(product_name or product_category or "products", city, "EXPLORING_PROD")
             suggestions = [{"title": s, "action": "query_rewrite", "query": s} for s in context_chips]
+            # Add marketplace-specific chips if browsing without filter
+            if not marketplace:
+                suggestions += [
+                    {"title": "🛍️ Amazon Products", "action": "query_rewrite", "query": f"Amazon {product_name or product_category or 'products'}"},
+                    {"title": "🟡 Blinkit Products", "action": "query_rewrite", "query": f"Blinkit {product_name or product_category or 'products'}"},
+                ]
 
             if len(formatted_products) == current_limit:
                 suggestions.insert(0, {"title": "Next 10 Results ⏭️", "action": "next_option", "query": "Show Next 10 Results"})
@@ -741,6 +990,7 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
                     "flow_state": "EXPLORING_PROD",
                     "product_name": product_name,
                     "category": product_category,
+                    "marketplace": marketplace,
                     "city": city,
                     "offset": current_offset,
                     "limit": current_limit
