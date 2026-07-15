@@ -35,77 +35,11 @@ _DB_ENV = os.getenv("DATABASE_URL") or "google_map_data.db"
 # Always resolve relative to THIS file's directory so it works regardless of CWD
 DATABASE_URL = _DB_ENV if os.path.isabs(_DB_ENV) else os.path.join(_BASE_DIR, os.path.basename(_DB_ENV))
 
-print(f"[DB] SQLite PATH: {os.path.abspath(DATABASE_URL)}")
 CSV_PATH = os.path.join(_BASE_DIR, "g_map_master_table_sample.csv")
 
 # ── Verify MySQL connection on startup ──────────────────────────────
 test_mysql_connection()
 initialize_database()
-print(f"[DB] SQLite (app data): {DATABASE_URL}")
-
-# Self-healing: Ensure bookmarks table exists on startup
-try:
-    conn = sqlite3.connect(DATABASE_URL)
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS chatbot_bookmarks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT,
-        business_id INTEGER,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (business_id) REFERENCES g_map_master_table(global_business_id)
-    )
-    """)
-    conn.commit()
-    conn.close()
-    print("[DB] Bookmarks table verified successfully.")
-except Exception as startup_err:
-    print(f"[DB] Error verifying bookmarks table: {startup_err}")
-
-# Ensure reviews table columns exist
-try:
-    conn = sqlite3.connect(DATABASE_URL)
-    conn.execute('''
-    CREATE TABLE IF NOT EXISTS chatbot_reviews (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        business_id INTEGER NOT NULL,
-        user_id TEXT NOT NULL,
-        rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
-        comment TEXT,
-        created_at TEXT DEFAULT (datetime('now', 'localtime'))
-    )
-    ''')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_reviews_business_id ON reviews(business_id)')
-    try:
-        conn.execute("ALTER TABLE reviews ADD COLUMN merchant_reply TEXT;")
-    except:
-        pass
-    try:
-        conn.execute("ALTER TABLE reviews ADD COLUMN helpful_votes INTEGER DEFAULT 0;")
-    except:
-        pass
-    conn.commit()
-    conn.close()
-    print("[DB] Reviews table verified successfully.")
-except Exception as startup_err:
-    print(f"[DB] Error verifying reviews table: {startup_err}")
-
-# Ensure business photos table exists
-try:
-    conn = sqlite3.connect(DATABASE_URL)
-    conn.execute('''
-    CREATE TABLE IF NOT EXISTS chatbot_business_photos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        business_id INTEGER NOT NULL,
-        photo_url TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now', 'localtime')),
-        FOREIGN KEY (business_id) REFERENCES g_map_master_table(global_business_id) ON DELETE CASCADE
-    )
-    ''')
-    conn.commit()
-    conn.close()
-    print("[DB] Business photos table verified successfully.")
-except Exception as startup_err:
-    print(f"[DB] Error verifying business photos table: {startup_err}")
 print(f"[DB] All data stored in MySQL: {os.getenv('MYSQL_DATABASE')}")
 
 
@@ -3179,37 +3113,6 @@ def delete_business_photo(photo_id: int, payload: dict = Depends(get_authenticat
     except Exception as e:
         raise HTTPException(400, str(e))
 
-
-@app.get("/api/bookmarks")
-def list_bookmarks(user_id: str):
-    try:
-        # Get bookmark IDs from SQLite
-        with db_context() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT business_id FROM chatbot_bookmarks WHERE user_id = ? ORDER BY id DESC", (user_id,))
-            biz_ids = [r[0] for r in cur.fetchall()]
-        if not biz_ids:
-            return []
-        # Fetch business details from MySQL using global_business_id
-        placeholders = ",".join("%s" for _ in biz_ids)
-        with mysql_ctx() as myconn:
-            mycur = myconn.cursor(dictionary=True)
-            mycur.execute(f"SELECT * FROM master_table WHERE global_business_id IN ({placeholders})", tuple(biz_ids))
-            rows = mycur.fetchall()
-        return map_business_fields(rows)
-    except Exception as e:
-        raise HTTPException(400, str(e))
-
-@app.delete("/api/bookmarks/{business_id}")
-def remove_bookmark(business_id: int, user_id: str):
-    try:
-        with db_context() as conn:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM chatbot_bookmarks WHERE user_id = ? AND business_id = ?", (user_id, business_id))
-            conn.commit()
-        return {"success": True, "message": "Bookmark removed"}
-    except Exception as e:
-        raise HTTPException(400, str(e))
 
 # ── COMPARE BUSINESSES ENDPOINT ───────────────────────────────────────
 

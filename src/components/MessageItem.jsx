@@ -424,7 +424,7 @@ function ProductCard({ prod, onAction }) {
 // BUSINESS CARD
 // ─────────────────────────────────────────────────────────
 function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode }) {
-  const isOwner = isLoggedIn && Number(session?.id) === Number(biz.owner_id);
+  const isOwner = session.email && biz.email && session.email.toLowerCase() === biz.email.toLowerCase();
   const avatarStyle = getAvatarStyle(biz.business_name || 'B');
   const coverStyle = getAvatarStyle((biz.business_name || 'B') + "_cover");
   const firstLetter = String(biz.business_name || 'B').trim().charAt(0).toUpperCase();
