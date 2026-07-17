@@ -238,7 +238,8 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
         "explore products", "browse products", "shop products",
         "explore business", "business listing", "explore listings", "browse listings",
         "browse categories", "all categories", "show categories",
-        "browse locations", "explore locations", "change city", "all cities"
+        "browse locations", "explore locations", "change city", "all cities",
+        "browse cities", "browse city"
     ]
     is_explicit_reset = any(k in q_lower for k in reset_keywords)
     is_greeting_at_start = flow_state == "START" and is_greeting(req.query)
@@ -249,10 +250,100 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
     elif is_greeting_at_start:
         flow_state = "START"  # Only reset if already at START
 
+    # Blinkit Flow Trigger
+    if q_lower in ["blinkit", "blinkit products"]:
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT category, COUNT(*) as cnt FROM blinkit WHERE category IS NOT NULL AND category != '' GROUP BY category ORDER BY cnt DESC LIMIT 15"
+            )
+            categories = [row["category"] for row in cur.fetchall() if row["category"]]
+        
+        cat_chips = [{"title": c, "action": "query_rewrite", "query": c} for c in categories]
+        cat_chips.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+
+        resp = {
+            "type": "flow_step",
+            "data": "🟡 **Blinkit Categories** — Select a category to explore:",
+            "suggestions": cat_chips,
+            "search_metadata": {"flow_state": "AWAITING_BLINKIT_CATEGORY"}
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+    # BigBasket Flow Trigger
+    if q_lower in ["bigbasket", "bigbasket products"]:
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT main_category, COUNT(*) as cnt FROM bigbasket WHERE main_category IS NOT NULL AND main_category != '' GROUP BY main_category ORDER BY cnt DESC LIMIT 15"
+            )
+            categories = [row["main_category"] for row in cur.fetchall() if row["main_category"]]
+        
+        cat_chips = [{"title": c, "action": "query_rewrite", "query": c} for c in categories]
+        cat_chips.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+
+        resp = {
+            "type": "flow_step",
+            "data": "🟢 **BigBasket Categories** — Select a category to explore:",
+            "suggestions": cat_chips,
+            "search_metadata": {"flow_state": "AWAITING_BIGBASKET_CATEGORY"}
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+    # Flipkart Flow Trigger
+    if q_lower in ["flipkart", "flipkart products"]:
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT main_category, COUNT(*) as cnt FROM flipkart_products_new WHERE main_category IS NOT NULL AND main_category != '' GROUP BY main_category ORDER BY cnt DESC LIMIT 15"
+            )
+            categories = [row["main_category"] for row in cur.fetchall() if row["main_category"]]
+        
+        cat_chips = [{"title": c, "action": "query_rewrite", "query": c} for c in categories]
+        cat_chips.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+
+        resp = {
+            "type": "flow_step",
+            "data": "🔵 **Flipkart Categories** — Select a category to explore:",
+            "suggestions": cat_chips,
+            "search_metadata": {"flow_state": "AWAITING_FLIPKART_MAIN_CATEGORY"}
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+    # Amazon Flow Trigger
+    if q_lower in ["amazon", "amazon products"]:
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT categoryName, COUNT(*) as cnt FROM amazon_products WHERE categoryName IS NOT NULL AND categoryName != '' GROUP BY categoryName ORDER BY cnt DESC LIMIT 15"
+            )
+            categories = [row["categoryName"] for row in cur.fetchall() if row["categoryName"]]
+        
+        cat_chips = [{"title": c, "action": "query_rewrite", "query": c} for c in categories]
+        cat_chips.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+
+        resp = {
+            "type": "flow_step",
+            "data": "🧡 **Amazon Categories** — Select a category to explore:",
+            "suggestions": cat_chips,
+            "search_metadata": {"flow_state": "AWAITING_AMAZON_CATEGORY"}
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+
+
     # -------------------------------------------------------------------------
     # STATE: START (Entry Point) — show greeting or route branch
     # -------------------------------------------------------------------------
-    if flow_state == "START" or q_lower == "start new search":
+    if flow_state == "START" or "start new search" in q_lower:
         # Business Listings branch — handle all forms of 'explore listings'
         if any(x in q_lower for x in [
             "business listing", "listings", "explore business", "explore listing",
@@ -296,11 +387,10 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
             # Add marketplace chips
             prod_chips += [
                 {"title": "🛍️ Amazon", "action": "query_rewrite", "query": "Amazon products"},
-                {"title": "🟡 Blinkit", "action": "query_rewrite", "query": "Blinkit products"},
+                {"title": "🟡 Blinkit", "action": "query_rewrite", "query": "Blinkit"},
                 {"title": "🟢 BigBasket", "action": "query_rewrite", "query": "BigBasket products"},
                 {"title": "🔵 Flipkart", "action": "query_rewrite", "query": "Flipkart products"},
             ]
-            prod_chips.append({"title": "🔍 Search Any Product", "action": "query_rewrite", "query": "Any Product"})
 
             resp = {
                 "type": "flow_step",
@@ -330,7 +420,7 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
             return resp
 
         # Browse Locations branch
-        elif any(x in q_lower for x in ["browse location", "explore location", "all cities", "show cities", "all city", "change city"]):
+        elif any(x in q_lower for x in ["browse location", "explore location", "all cities", "show cities", "all city", "change city", "browse cities", "browse city"]):
             with mysql_ctx() as conn:
                 cur = conn.cursor(dictionary=True)
                 cur.execute("SELECT city_name FROM Top_cities_rank ORDER BY city_rank ASC LIMIT 16")
@@ -348,13 +438,20 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
 
         else:
             # Greeting or unrecognized → welcome screen
-            if not q_lower or is_greeting(req.query) or q_lower == "start new search" or q_lower == "reset chat" or q_lower == "reset":
+            if not q_lower or is_greeting(req.query) or "start new search" in q_lower or "reset chat" in q_lower or "reset" in q_lower:
                 resp = {
-                    "type": "explore_welcome",
-                    "data": "Hi 👋 I'm your **Local Directory Assistant!** What would you like to explore today?",
+                    "type": "faq",
+                    "data": "Welcome to Honeybee Digital AI.",
                     "suggestions": [
-                        {"title": "🏢 Business Listings", "action": "query_rewrite", "query": "explore business listings"},
-                        {"title": "🛍️ Products", "action": "query_rewrite", "query": "explore products"}
+                        {"title": "🏢 Explore Listings", "action": "query_rewrite", "query": "Explore Listings"},
+                        {"title": "🏷️ Best Deals", "action": "query_rewrite", "query": "Best Deals"},
+                        {"title": "📦 Browse Products", "action": "query_rewrite", "query": "Browse Products"},
+                        {"title": "📂 Browse Categories", "action": "query_rewrite", "query": "Browse Categories"},
+                        {"title": "📍 Browse Location", "action": "query_rewrite", "query": "Browse Locations"},
+                        {"title": "⭐ Top Rated Business", "action": "query_rewrite", "query": "Top Rated Businesses"},
+                        {"title": "🔥 Trending Products", "action": "query_rewrite", "query": "Trending Products"},
+                        {"title": "🆕 Recently Added", "action": "query_rewrite", "query": "Recently Added"},
+                        {"title": "❓ Help", "action": "query_rewrite", "query": "Help"}
                     ],
                     "search_metadata": {"flow_state": "START"}
                 }
@@ -362,6 +459,490 @@ async def handle_chat_query(req, session_phone: Optional[str], session_email: Op
                     _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
                 return resp
             # Otherwise fall through to NLU for direct query
+
+    # -------------------------------------------------------------------------
+    # STATE: AWAITING_BIGBASKET_CATEGORY — user is selecting a bigbasket category
+    # -------------------------------------------------------------------------
+    if flow_state == "AWAITING_BIGBASKET_CATEGORY":
+        category_name = req.query.strip()
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT subcategory, COUNT(*) as cnt FROM bigbasket WHERE LOWER(main_category) = LOWER(%s) AND subcategory IS NOT NULL GROUP BY subcategory ORDER BY cnt DESC LIMIT 15",
+                (category_name,)
+            )
+            subcategories = [row["subcategory"] for row in cur.fetchall() if row["subcategory"]]
+            
+        sub_chips = [{"title": s, "action": "query_rewrite", "query": s} for s in subcategories]
+        sub_chips.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+        
+        resp = {
+            "type": "flow_step",
+            "data": f"📂 **{category_name}** — Choose a subcategory to view products:",
+            "suggestions": sub_chips,
+            "search_metadata": {
+                "flow_state": "AWAITING_BIGBASKET_SUBCATEGORY",
+                "bigbasket_category": category_name
+            }
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+    # -------------------------------------------------------------------------
+    # STATE: AWAITING_BIGBASKET_SUBCATEGORY — user is selecting a bigbasket subcategory
+    # -------------------------------------------------------------------------
+    if flow_state == "AWAITING_BIGBASKET_SUBCATEGORY":
+        # Check if user clicked Next
+        q_lower = req.query.lower().strip()
+        next_triggers = ["next", "more", "show more", "next results", "show next", "show next results"]
+        is_next = any(t in q_lower for t in next_triggers)
+
+        if is_next and last_meta:
+            subcategory_name = last_meta.get("bigbasket_subcategory")
+            category_name = last_meta.get("bigbasket_category")
+            current_offset = last_meta.get("offset", 0) + last_meta.get("limit", 15)
+        else:
+            subcategory_name = req.query.strip()
+            category_name = last_meta.get("bigbasket_category")
+            current_offset = 0
+
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT sku_id, product_name, product_url, rating, review, mrp, selling_price, main_category, subcategory FROM bigbasket WHERE LOWER(main_category) = LOWER(%s) AND LOWER(subcategory) = LOWER(%s) AND product_name IS NOT NULL LIMIT %s OFFSET %s",
+                (category_name, subcategory_name, 16, current_offset)
+            )
+            products = cur.fetchall()
+            
+        has_next_page = len(products) > 15
+        products = products[:15]
+
+        formatted_products = []
+        for p in products:
+            sku_id = p.get("sku_id")
+            product_url = p.get("product_url")
+            image_url = None
+            if product_url and sku_id:
+                try:
+                    parts = product_url.split(f"/pd/{sku_id}/")
+                    if len(parts) > 1:
+                        slug_part = parts[1].split("/")[0].split("?")[0]
+                        image_url = f"https://www.bigbasket.com/media/uploads/p/s/{sku_id}_1-{slug_part}.jpg"
+                except Exception:
+                    pass
+            if not image_url and sku_id:
+                image_url = f"https://www.bigbasket.com/media/uploads/p/s/{sku_id}_1.jpg"
+
+            price = float(p.get("selling_price") or 0.0)
+            mrp = float(p.get("mrp") or 0.0)
+            discount = max(0.0, mrp - price)
+            
+            formatted_products.append({
+                "product_name": p.get("product_name"),
+                "brand": "Generic Brand",
+                "category": p.get("main_category"),
+                "sub_category": p.get("subcategory"),
+                "price": price,
+                "mrp": mrp,
+                "discount": discount,
+                "quantity": "N/A",
+                "availability": True,
+                "image_url": image_url,
+                "product_url": product_url,
+                "marketplace_name": "BigBasket"
+            })
+            
+        suggestions = []
+        if has_next_page:
+            suggestions.append({"title": "Next ⏭️", "action": "query_rewrite", "query": "Show Next Results"})
+        suggestions.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+
+        resp = {
+            "type": "database_products",
+            "intro": f"🛍️ Here are the products under the subcategory **{subcategory_name}**:",
+            "data": formatted_products,
+            "suggestions": suggestions,
+            "search_metadata": {
+                "flow_state": "AWAITING_BIGBASKET_SUBCATEGORY",
+                "bigbasket_category": category_name,
+                "bigbasket_subcategory": subcategory_name,
+                "offset": current_offset,
+                "limit": 15
+            }
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+
+    # -------------------------------------------------------------------------
+    # STATE: AWAITING_BLINKIT_CATEGORY — user is selecting a blinkit category
+    # -------------------------------------------------------------------------
+    if flow_state == "AWAITING_BLINKIT_CATEGORY":
+        category_name = req.query.strip()
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT sub_category, COUNT(*) as cnt FROM blinkit WHERE LOWER(category) = LOWER(%s) AND sub_category IS NOT NULL GROUP BY sub_category ORDER BY cnt DESC LIMIT 15",
+                (category_name,)
+            )
+            subcategories = [row["sub_category"] for row in cur.fetchall() if row["sub_category"]]
+            
+        sub_chips = [{"title": s, "action": "query_rewrite", "query": s} for s in subcategories]
+        sub_chips.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+        
+        resp = {
+            "type": "flow_step",
+            "data": f"📂 **{category_name}** — Choose a subcategory to view products:",
+            "suggestions": sub_chips,
+            "search_metadata": {
+                "flow_state": "AWAITING_BLINKIT_SUBCATEGORY",
+                "blinkit_category": category_name
+            }
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+    # -------------------------------------------------------------------------
+    # STATE: AWAITING_BLINKIT_SUBCATEGORY — user is selecting a blinkit subcategory
+    # -------------------------------------------------------------------------
+    if flow_state == "AWAITING_BLINKIT_SUBCATEGORY":
+        # Check if user clicked Next
+        q_lower = req.query.lower().strip()
+        next_triggers = ["next", "more", "show more", "next results", "show next", "show next results"]
+        is_next = any(t in q_lower for t in next_triggers)
+
+        if is_next and last_meta:
+            subcategory_name = last_meta.get("blinkit_subcategory")
+            category_name = last_meta.get("blinkit_category")
+            current_offset = last_meta.get("offset", 0) + last_meta.get("limit", 15)
+        else:
+            subcategory_name = req.query.strip()
+            category_name = last_meta.get("blinkit_category")
+            current_offset = 0
+
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT product_name, price, mrp, discount, quantity, brand, availability, image_url, product_url, category, sub_category FROM blinkit WHERE LOWER(category) = LOWER(%s) AND LOWER(sub_category) = LOWER(%s) AND product_name IS NOT NULL LIMIT %s OFFSET %s",
+                (category_name, subcategory_name, 16, current_offset)
+            )
+            products = cur.fetchall()
+            
+        has_next_page = len(products) > 15
+        products = products[:15]
+
+        formatted_products = []
+        for p in products:
+            price = float(p.get("price") or 0.0)
+            mrp = float(p.get("mrp") or 0.0)
+            discount = float(p.get("discount") or 0.0)
+            formatted_products.append({
+                "product_name": p.get("product_name"),
+                "brand": p.get("brand") or "Generic Brand",
+                "category": p.get("category"),
+                "sub_category": p.get("sub_category"),
+                "price": price,
+                "mrp": mrp,
+                "discount": discount,
+                "quantity": p.get("quantity") or "N/A",
+                "availability": bool(p.get("availability")),
+                "image_url": p.get("image_url"),
+                "product_url": p.get("product_url"),
+                "marketplace_name": "Blinkit"
+            })
+            
+        suggestions = []
+        if has_next_page:
+            suggestions.append({"title": "Next ⏭️", "action": "query_rewrite", "query": "Show Next Results"})
+        suggestions.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+
+        resp = {
+            "type": "database_products",
+            "intro": f"🛍️ Here are the products under the subcategory **{subcategory_name}**:",
+            "data": formatted_products,
+            "suggestions": suggestions,
+            "search_metadata": {
+                "flow_state": "AWAITING_BLINKIT_SUBCATEGORY",
+                "blinkit_category": category_name,
+                "blinkit_subcategory": subcategory_name,
+                "offset": current_offset,
+                "limit": 15
+            }
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+
+    # -------------------------------------------------------------------------
+    # STATE: AWAITING_BLINKIT_PRODUCT — user is selecting a blinkit product
+    # -------------------------------------------------------------------------
+    if flow_state == "AWAITING_BLINKIT_PRODUCT":
+        product_name = req.query.strip()
+        category_name = last_meta.get("blinkit_category")
+        subcategory_name = last_meta.get("blinkit_subcategory")
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT product_name, price, mrp, discount, quantity, brand, availability FROM blinkit WHERE LOWER(category) = LOWER(%s) AND LOWER(sub_category) = LOWER(%s) AND LOWER(product_name) = LOWER(%s) LIMIT 1",
+                (category_name, subcategory_name, product_name)
+            )
+            prod_details = cur.fetchone()
+            
+        if prod_details:
+            price = prod_details.get("price", 0.0)
+            mrp = prod_details.get("mrp", 0.0)
+            discount = prod_details.get("discount", 0.0)
+            quantity = prod_details.get("quantity", "N/A")
+            brand = prod_details.get("brand", "N/A")
+            avail = "Yes" if prod_details.get("availability") else "No"
+            
+            detail_msg = (
+                f"📋 **Product Details:**\n\n"
+                f"**Name:** {product_name}\n"
+                f"**Brand:** {brand}\n"
+                f"**Price:** ₹{price} (MRP: ₹{mrp}, Discount: ₹{discount})\n"
+                f"**Quantity:** {quantity}\n"
+                f"**Available:** {avail}"
+            )
+        else:
+            detail_msg = f"❌ Sorry, we couldn't find details for **{product_name}**."
+            
+        resp = {
+            "type": "faq",
+            "data": detail_msg,
+            "suggestions": [
+                {"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"}
+            ],
+            "search_metadata": {"flow_state": "START"}
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+    # -------------------------------------------------------------------------
+    # STATE: AWAITING_FLIPKART_MAIN_CATEGORY — user is selecting a flipkart main category
+    # -------------------------------------------------------------------------
+    if flow_state == "AWAITING_FLIPKART_MAIN_CATEGORY":
+        main_category = req.query.strip()
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT subcategory, COUNT(*) as cnt FROM flipkart_products_new WHERE LOWER(main_category) = LOWER(%s) AND subcategory IS NOT NULL GROUP BY subcategory ORDER BY cnt DESC LIMIT 15",
+                (main_category,)
+            )
+            subcategories = [row["subcategory"] for row in cur.fetchall() if row["subcategory"]]
+            
+        sub_chips = [{"title": s, "action": "query_rewrite", "query": s} for s in subcategories]
+        sub_chips.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+        
+        resp = {
+            "type": "flow_step",
+            "data": f"📂 **{main_category}** — Choose a subcategory to explore:",
+            "suggestions": sub_chips,
+            "search_metadata": {
+                "flow_state": "AWAITING_FLIPKART_SUBCATEGORY",
+                "flipkart_main_category": main_category
+            }
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+    # -------------------------------------------------------------------------
+    # STATE: AWAITING_FLIPKART_SUBCATEGORY — user is selecting a flipkart subcategory
+    # -------------------------------------------------------------------------
+    if flow_state == "AWAITING_FLIPKART_SUBCATEGORY":
+        subcategory = req.query.strip()
+        main_category = last_meta.get("flipkart_main_category")
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT leaf_category, COUNT(*) as cnt FROM flipkart_products_new WHERE LOWER(main_category) = LOWER(%s) AND LOWER(subcategory) = LOWER(%s) AND leaf_category IS NOT NULL GROUP BY leaf_category ORDER BY cnt DESC LIMIT 15",
+                (main_category, subcategory)
+            )
+            leaf_categories = [row["leaf_category"] for row in cur.fetchall() if row["leaf_category"]]
+            
+        leaf_chips = [{"title": l, "action": "query_rewrite", "query": l} for l in leaf_categories]
+        leaf_chips.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+        
+        resp = {
+            "type": "flow_step",
+            "data": f"📂 **{subcategory}** — Choose a leaf category to view products:",
+            "suggestions": leaf_chips,
+            "search_metadata": {
+                "flow_state": "AWAITING_FLIPKART_LEAF_CATEGORY",
+                "flipkart_main_category": main_category,
+                "flipkart_subcategory": subcategory
+            }
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+    # -------------------------------------------------------------------------
+    # STATE: AWAITING_FLIPKART_LEAF_CATEGORY — user is selecting a flipkart leaf category
+    # -------------------------------------------------------------------------
+    if flow_state == "AWAITING_FLIPKART_LEAF_CATEGORY":
+        # Check if user clicked Next
+        q_lower = req.query.lower().strip()
+        next_triggers = ["next", "more", "show more", "next results", "show next", "show next results"]
+        is_next = any(t in q_lower for t in next_triggers)
+
+        if is_next and last_meta:
+            leaf_category = last_meta.get("flipkart_leaf_category")
+            subcategory = last_meta.get("flipkart_subcategory")
+            main_category = last_meta.get("flipkart_main_category")
+            current_offset = last_meta.get("offset", 0) + last_meta.get("limit", 15)
+        else:
+            leaf_category = req.query.strip()
+            main_category = last_meta.get("flipkart_main_category")
+            subcategory = last_meta.get("flipkart_subcategory")
+            current_offset = 0
+
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT product_id, product_name, product_url, rating, reviews, mrp, price, discount, image_url, brand, spec_bullets FROM flipkart_products_new WHERE LOWER(main_category) = LOWER(%s) AND LOWER(subcategory) = LOWER(%s) AND LOWER(leaf_category) = LOWER(%s) AND product_name IS NOT NULL LIMIT %s OFFSET %s",
+                (main_category, subcategory, leaf_category, 16, current_offset)
+            )
+            products = cur.fetchall()
+            
+        has_next_page = len(products) > 15
+        products = products[:15]
+
+        formatted_products = []
+        for p in products:
+            price = float(p.get("price") or 0.0)
+            mrp = float(p.get("mrp") or 0.0) if p.get("mrp") else None
+            
+            discount_val = 0.0
+            if mrp and mrp > price:
+                discount_val = mrp - price
+            
+            formatted_products.append({
+                "product_name": p.get("product_name"),
+                "brand": p.get("brand") or "Generic Brand",
+                "category": p.get("main_category") or "",
+                "sub_category": p.get("subcategory") or "",
+                "price": price,
+                "mrp": mrp or price,
+                "discount": discount_val,
+                "quantity": "N/A",
+                "availability": True,
+                "image_url": p.get("image_url"),
+                "product_url": p.get("product_url"),
+                "marketplace_name": "Flipkart",
+                "description": p.get("spec_bullets") or ""
+            })
+            
+        suggestions = []
+        if has_next_page:
+            suggestions.append({"title": "Next ⏭️", "action": "query_rewrite", "query": "Show Next Results"})
+        suggestions.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+
+        resp = {
+            "type": "database_products",
+            "intro": f"🛍️ Here are the products under the leaf category **{leaf_category}**:",
+            "data": formatted_products,
+            "suggestions": suggestions,
+            "search_metadata": {
+                "flow_state": "AWAITING_FLIPKART_LEAF_CATEGORY",
+                "flipkart_main_category": main_category,
+                "flipkart_subcategory": subcategory,
+                "flipkart_leaf_category": leaf_category,
+                "offset": current_offset,
+                "limit": 15
+            }
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+
+    # -------------------------------------------------------------------------
+    # STATE: AWAITING_AMAZON_CATEGORY — user is selecting an amazon category
+    # -------------------------------------------------------------------------
+    if flow_state == "AWAITING_AMAZON_CATEGORY":
+        # Check if user clicked Next
+        q_lower = req.query.lower().strip()
+        next_triggers = ["next", "more", "show more", "next results", "show next", "show next results"]
+        is_next = any(t in q_lower for t in next_triggers)
+
+        if is_next and last_meta:
+            category_name = last_meta.get("amazon_category")
+            current_offset = last_meta.get("offset", 0) + last_meta.get("limit", 15)
+        else:
+            category_name = req.query.strip()
+            current_offset = 0
+
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT id, asin, title, imgUrl, productUrl, stars, reviews, price, listPrice, categoryName, isBestSeller FROM amazon_products WHERE LOWER(categoryName) = LOWER(%s) AND title IS NOT NULL LIMIT %s OFFSET %s",
+                (category_name, 16, current_offset)
+            )
+            products = cur.fetchall()
+            
+        has_next_page = len(products) > 15
+        products = products[:15]
+
+        formatted_products = []
+        for p in products:
+            price = float(p.get("price") or 0.0)
+            list_price = float(p.get("listPrice") or 0.0) if p.get("listPrice") else None
+            
+            discount_val = 0.0
+            if list_price and list_price > price:
+                discount_val = list_price - price
+            
+            reviews_count = int(p.get("reviews") or 0)
+            stars_rating = float(p.get("stars") or 0.0)
+            
+            formatted_products.append({
+                "product_name": p.get("title") or "Product",
+                "brand": "Generic Brand",
+                "category": p.get("categoryName") or "",
+                "sub_category": "",
+                "price": price,
+                "mrp": list_price or price,
+                "discount": discount_val,
+                "quantity": "N/A",
+                "availability": True,
+                "image_url": p.get("imgUrl"),
+                "product_url": p.get("productUrl"),
+                "marketplace_name": "Amazon",
+                "asin": p.get("asin"),
+                "rating": stars_rating,
+                "reviews": reviews_count
+            })
+            
+        suggestions = []
+        if has_next_page:
+            suggestions.append({"title": "Next ⏭️", "action": "query_rewrite", "query": "Show Next Results"})
+        suggestions.append({"title": "🔄 Start New Search", "action": "query_rewrite", "query": "start new search"})
+
+        resp = {
+            "type": "database_products",
+            "intro": f"🛍️ Here are the products under the category **{category_name}**:",
+            "data": formatted_products,
+            "suggestions": suggestions,
+            "search_metadata": {
+                "flow_state": "AWAITING_AMAZON_CATEGORY",
+                "amazon_category": category_name,
+                "offset": current_offset,
+                "limit": 15
+            }
+        }
+        if chat_session_id:
+            _save_chat_message_internal(chat_session_id, "assistant", json.dumps(resp))
+        return resp
+
+
+
 
     # -------------------------------------------------------------------------
     # STATE: AWAITING_CITY_FOR_BIZ — user is selecting/typing a city

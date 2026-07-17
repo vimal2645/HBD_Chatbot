@@ -82,7 +82,7 @@ const ChatArea = (props) => {
   // ── HOOKS ─────────────────────────────────────────────
   const wizards = useChatWizards({
     session, currentLanguage, setLocalMessages, addThinking, removeThinking,
-    setSession, setIsLoggedIn, setQuickActionsView: () => {},
+    setSession, setIsLoggedIn, setQuickActionsView: () => { },
     flowMode, setFlowMode,
     wizardStep, setWizardStep,
     wizardData, setWizardData,
@@ -104,10 +104,10 @@ const ChatArea = (props) => {
 
     if (localMessages.length <= 2 && localMessages.every(m => m.id === 'init' || m.id === 'hint')) {
       setLocalMessages([
-        { 
-          id: 'init', 
-          role: 'bot', 
-          type: 'faq', 
+        {
+          id: 'init',
+          role: 'bot',
+          type: 'faq',
           content: "👋 Welcome to HoneyBee Digital!\n\nI'm your AI Customer Support Assistant.\n\nI can help you explore businesses, products and other information available in our database.\n\nHow can I help you today?",
           suggestions: [
             { title: "🏢 Explore Listings", action: "query_rewrite", query: "Explore Listings" },
@@ -210,15 +210,15 @@ const ChatArea = (props) => {
           const savedChats = localStorage.getItem('guest_chat_list');
           const chats = savedChats ? JSON.parse(savedChats) : [];
           const currentChat = chats.find(c => c.session_id === currentSessionId);
-          
+
           if (currentChat && currentChat.title === 'New Chat') {
             const firstMsg = userMsgs[0].content || '';
             const newTitle = firstMsg.trim().substring(0, 30) || 'New Chat';
-            const updatedChats = chats.map(c => 
+            const updatedChats = chats.map(c =>
               c.session_id === currentSessionId ? { ...c, title: newTitle, updated_at: new Date().toISOString() } : c
             );
             localStorage.setItem('guest_chat_list', JSON.stringify(updatedChats));
-            
+
             // Sync the sidebar chatList state
             if (setChatList) {
               setChatList(updatedChats);
@@ -347,10 +347,10 @@ const ChatArea = (props) => {
       localMessages.forEach((msg, idx) => {
         if (msg.type === 'thinking') return;
         const roleName = msg.role === 'user' ? 'USER' : 'AI ASSISTANT';
-        
+
         // Simple human-readable representation of time
         textContent += `[${roleName}]:\n`;
-        
+
         if (msg.type === 'text' || msg.type === 'faq') {
           textContent += `${msg.content}\n`;
         } else if (msg.type === 'database') {
@@ -391,12 +391,12 @@ const ChatArea = (props) => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `HBD_Chat_Session_${currentSessionId || 'export'}_${new Date().toISOString().slice(0,10)}.txt`;
+      a.download = `HBD_Chat_Session_${currentSessionId || 'export'}_${new Date().toISOString().slice(0, 10)}.txt`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      
+
       toast?.success('Conversation exported successfully!');
     } catch (e) {
       console.error('Export failed:', e);
@@ -413,11 +413,11 @@ const ChatArea = (props) => {
       const trans = UI_TRANSLATIONS[currentLanguage || 'en'] || UI_TRANSLATIONS.en;
       if (res.status === 'logged_in' && res.businesses?.length) {
         const biz = res.businesses[0];
-        const sessionData = { 
-          type: 'BUSINESS', 
-          businessId: biz.global_business_id, 
+        const sessionData = {
+          type: 'BUSINESS',
+          businessId: biz.global_business_id,
           businessName: biz.business_name,
-          city: biz.city 
+          city: biz.city
         };
         if (method === 'phone') sessionData.phone = identifier;
         else { sessionData.email = identifier; if (biz.phone_number) sessionData.phone = biz.phone_number; }
@@ -435,8 +435,8 @@ const ChatArea = (props) => {
         setSession(sessionData);
         setIsLoggedIn(true);
         setLocalMessages(prev => [...prev,
-          { id: Date.now(), role: 'bot', type: 'text', content: trans.welcome },
-          { id: Date.now() + 1, role: 'bot', type: 'text', content: trans.menu_hint || "💡 Click the ⋮ menu for more actions." }
+        { id: Date.now(), role: 'bot', type: 'text', content: trans.welcome },
+        { id: Date.now() + 1, role: 'bot', type: 'text', content: trans.menu_hint || "💡 Click the ⋮ menu for more actions." }
         ]);
         toast?.info('Logged in. No business found — you can add one!');
       }
@@ -454,7 +454,7 @@ const ChatArea = (props) => {
     setLocalMessages(prev => [...prev, { id: Date.now(), role: 'user', type: 'text', content: text }]);
     setMsgHistory(prev => prev[prev.length - 1] === text ? prev : [...prev, text]);
     setHistoryIndex(-1);
-    
+
     // Set status and add thinking
     setThinkingStatus('Analyzing query...');
     addThinking();
@@ -481,15 +481,15 @@ const ChatArea = (props) => {
       const lang = currentLanguage || 'en';
       const trans = UI_TRANSLATIONS[lang] || UI_TRANSLATIONS.en;
       console.log("BEFORE", {
-      flowMode,
-      wizardStep,
-      text
+        flowMode,
+        wizardStep,
+        text
       });
       const wasWizardFlow = await wizards.handleWizardSend(text, trans);
       console.log("AFTER", {
-      flowMode,
-      wizardStep,
-      wasWizardFlow
+        flowMode,
+        wizardStep,
+        wasWizardFlow
       });
       if (wasWizardFlow) {
         clearInterval(statusInterval);
@@ -523,7 +523,7 @@ const ChatArea = (props) => {
       setLocalMessages(prev => [...prev, {
         id: Date.now(), role: 'bot', type: responseType,
         content: data.data || data.content || (trans.fallback_response || 'I am not sure about that.'),
-        intro: data.intro, suggestions : data.suggestions, prompt: data.prompt,
+        intro: data.intro, suggestions: data.suggestions, prompt: data.prompt,
         search_metadata: data.search_metadata || null,
         context: data.context || null
       }]);
@@ -615,7 +615,7 @@ const ChatArea = (props) => {
       });
       return;
     }
-    
+
     if (action === 'delete_business') {
       if (window.confirm("Are you sure you want to permanently delete this business listing? This will also delete all products and deals associated with it.")) {
         setThinkingStatus('Deleting business listing...');
@@ -677,7 +677,7 @@ const ChatArea = (props) => {
       setWizardData(initialData);
       setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: trans.prompt_phone }]);
     }
-    
+
     if (action === 'resend_otp') {
       setOtpResent(true);
       await handleSend(null, 'resend');
@@ -686,9 +686,9 @@ const ChatArea = (props) => {
     }
 
     if (action === 'change_email') {
-      setWizardData(prev => ({...prev, email: ''}));
+      setWizardData(prev => ({ ...prev, email: '' }));
       setWizardStep(1);
-      setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: '📧 Please enter your email address again.'}]);
+      setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: '📧 Please enter your email address again.' }]);
       return;
     }
 
@@ -700,10 +700,10 @@ const ChatArea = (props) => {
       setLocalMessages(prev => [
         ...prev,
         {
-            id: crypto.randomUUID(),
-            role: "bot",
-            type: "text",
-            content: "✅ Setup cancelled."
+          id: crypto.randomUUID(),
+          role: "bot",
+          type: "text",
+          content: "✅ Setup cancelled."
         }]);
       return;
     }
@@ -724,10 +724,10 @@ const ChatArea = (props) => {
       setLocalMessages(prev => [
         ...prev,
         {
-            id: Date.now(),
-            role: 'bot',
-            type: 'text',
-            content: steps[0].prompt
+          id: Date.now(),
+          role: 'bot',
+          type: 'text',
+          content: steps[0].prompt
         }
       ]);
       return;
@@ -750,10 +750,10 @@ const ChatArea = (props) => {
       setLocalMessages(prev => [
         ...prev,
         {
-            id: Date.now(),
-            role: 'bot',
-            type: 'text',
-            content: steps[0].prompt
+          id: Date.now(),
+          role: 'bot',
+          type: 'text',
+          content: steps[0].prompt
         }
       ]);
 
@@ -768,10 +768,10 @@ const ChatArea = (props) => {
       setShowResetConfirm(false);
       // Restore the EXACT same welcome message as the initial load
       setLocalMessages([
-        { 
-          id: 'init', 
-          role: 'bot', 
-          type: 'faq', 
+        {
+          id: 'init',
+          role: 'bot',
+          type: 'faq',
           content: "👋 Welcome to HoneyBee Digital!\n\nI'm your AI Customer Support Assistant.\n\nI can help you explore businesses, products and other information available in our database.\n\nHow can I help you today?",
           suggestions: [
             { title: "🏢 Explore Listings", action: "query_rewrite", query: "Explore Listings" },
@@ -825,9 +825,11 @@ const ChatArea = (props) => {
       //Admin dashboard update
       if (payload) {
         setSelectedBusiness(payload);
-        const fields = [ "Business Name", "Category", "Phone Number", "Address", "Area", "City", "State", "Website"];
-        setLocalMessages(prev => [...prev, { id: Date.now(), role: "bot", type: "suggestions",
-        intro: `✏️ Updating: ${payload.business_name}\n\n What would you like to update?`, content: fields.map(f => ({ title: `Update ${f}`, action: `Update ${f}` }))}
+        const fields = ["Business Name", "Category", "Phone Number", "Address", "Area", "City", "State", "Website"];
+        setLocalMessages(prev => [...prev, {
+          id: Date.now(), role: "bot", type: "suggestions",
+          intro: `✏️ Updating: ${payload.business_name}\n\n What would you like to update?`, content: fields.map(f => ({ title: `Update ${f}`, action: `Update ${f}` }))
+        }
         ]);
         return;
       }
@@ -836,7 +838,7 @@ const ChatArea = (props) => {
       setThinkingStatus('Loading your businesses...');
       addThinking();
       try {
-        const data = await api.query({ query: 'Update my business', session, language: lang, session_id: currentSessionId});
+        const data = await api.query({ query: 'Update my business', session, language: lang, session_id: currentSessionId });
         removeThinking();
         setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: data.type, content: data.data, intro: data.intro, mode: data.mode }]);
       } catch (e) {
@@ -844,11 +846,12 @@ const ChatArea = (props) => {
       }
       return;
     }
-    
+
     if (action === 'select_business_for_update') {
       setSelectedBusiness(payload);
-      const fields = [ "Business Name", "Category", "Phone Number", "Address", "Area", "City", "State", "Website" ];
-      setLocalMessages(prev => [...prev, { id: Date.now(), role: "bot", type: "suggestions", intro: `✏️Updating: ${payload.business_name}\n\n What would you like to update?`, content: fields.map(f => ({ title: `Update ${f}`, action: `Update ${f}`})) 
+      const fields = ["Business Name", "Category", "Phone Number", "Address", "Area", "City", "State", "Website"];
+      setLocalMessages(prev => [...prev, {
+        id: Date.now(), role: "bot", type: "suggestions", intro: `✏️Updating: ${payload.business_name}\n\n What would you like to update?`, content: fields.map(f => ({ title: `Update ${f}`, action: `Update ${f}` }))
       }]);
       return;
     }
@@ -887,7 +890,7 @@ const ChatArea = (props) => {
           content: data.content !== undefined ? data.content : (data.data || ''),
           intro: data.intro
         }]);
-      } catch {removeThinking(); }
+      } catch { removeThinking(); }
     }
     if (action === 'manage_deals') {
       addThinking();
@@ -901,7 +904,7 @@ const ChatArea = (props) => {
           content: data.content !== undefined ? data.content : (data.data || ''),
           intro: data.intro
         }]);
-      } catch {removeThinking(); }
+      } catch { removeThinking(); }
     }
     if (action === 'delete_product') {
       const res = await api.deleteProduct(payload);
@@ -1119,61 +1122,61 @@ const ChatArea = (props) => {
       >
         <>
           {visibleMessages.map(msg => (
-              <MessageItem
-                key={msg.id}
-                message={msg}
-                onAction={handleAction}
-                isLoggedIn={isLoggedIn}
-                session={session}
-                language={currentLanguage}
-                compareList={compareList}
-              />
-            ))}
-            {isThinking && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <TypingIndicator status={thinkingStatus} />
-                
-                {/* Shimmering Skeleton Loader for Business Cards */}
-                {(thinkingStatus.includes('Scraping') || thinkingStatus.includes('Searching')) && (
-                  <div style={{ 
-                    display: 'grid', 
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', 
-                    gap: 14, 
-                    width: '100%',
-                    marginTop: 4,
-                    animation: 'scaleIn 200ms ease'
-                  }}>
-                    {[...Array(3)].map((_, idx) => (
-                      <div key={idx} style={{
-                        background: 'var(--bg-surface)',
-                        border: '1px solid var(--border-subtle)',
-                        borderRadius: 'var(--radius-lg)',
-                        height: 180,
-                        padding: 14,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 10,
-                        overflow: 'hidden',
-                        position: 'relative'
-                      }}>
-                        {/* Title shimmer */}
-                        <div style={{ height: 16, width: '70%', background: 'var(--bg-surface-2)', borderRadius: 4 }} className="shimmer" />
-                        {/* Subtitle shimmer */}
-                        <div style={{ height: 12, width: '40%', background: 'var(--bg-surface-2)', borderRadius: 4 }} className="shimmer" />
-                        {/* Address shimmer */}
-                        <div style={{ height: 10, width: '90%', background: 'var(--bg-surface-2)', borderRadius: 4, marginTop: 'auto' }} className="shimmer" />
-                        {/* Actions row shimmer */}
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
-                          {[...Array(4)].map((_, i) => (
-                            <div key={i} style={{ height: 20, borderRadius: 6, background: 'var(--bg-surface-2)' }} className="shimmer" />
-                          ))}
-                        </div>
+            <MessageItem
+              key={msg.id}
+              message={msg}
+              onAction={handleAction}
+              isLoggedIn={isLoggedIn}
+              session={session}
+              language={currentLanguage}
+              compareList={compareList}
+            />
+          ))}
+          {isThinking && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <TypingIndicator status={thinkingStatus} />
+
+              {/* Shimmering Skeleton Loader for Business Cards */}
+              {(thinkingStatus.includes('Scraping') || thinkingStatus.includes('Searching')) && (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+                  gap: 14,
+                  width: '100%',
+                  marginTop: 4,
+                  animation: 'scaleIn 200ms ease'
+                }}>
+                  {[...Array(3)].map((_, idx) => (
+                    <div key={idx} style={{
+                      background: 'var(--bg-surface)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 'var(--radius-lg)',
+                      height: 180,
+                      padding: 14,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 10,
+                      overflow: 'hidden',
+                      position: 'relative'
+                    }}>
+                      {/* Title shimmer */}
+                      <div style={{ height: 16, width: '70%', background: 'var(--bg-surface-2)', borderRadius: 4 }} className="shimmer" />
+                      {/* Subtitle shimmer */}
+                      <div style={{ height: 12, width: '40%', background: 'var(--bg-surface-2)', borderRadius: 4 }} className="shimmer" />
+                      {/* Address shimmer */}
+                      <div style={{ height: 10, width: '90%', background: 'var(--bg-surface-2)', borderRadius: 4, marginTop: 'auto' }} className="shimmer" />
+                      {/* Actions row shimmer */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                        {[...Array(4)].map((_, i) => (
+                          <div key={i} style={{ height: 20, borderRadius: 6, background: 'var(--bg-surface-2)' }} className="shimmer" />
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </>
         <div ref={messagesEndRef} />
       </div>
@@ -1221,13 +1224,13 @@ const ChatArea = (props) => {
             flexShrink: 0,
           }}
         >
-        {(flowMode === "ADD_WIZARD" || flowMode === "ADD_PRODUCT" || flowMode === "ADD_DEAL" || flowMode === "UPDATE_VALUE") && ( <div style={{display: "flex", gap: "10px", padding: "10px 14px", overflowX: "auto", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-primary)"}}> <button type="button" onClick={() => handleAction("cancel_wizard")} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff";}} onMouseLeave={(e) => {e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)";}} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)";}} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)";}}> ❌ Cancel Setup </button></div>)}
-        
-        <div style={{display: "flex", gap: "10px", padding: "10px 14px", overflowX: "auto", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-primary)"}}>
-          <button type="button" onClick={() => handleAction('add_new_business')} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff";}} onMouseLeave={(e) => {e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)";}} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)";}} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)";}}>➕ Add Business</button>
-          <button type="button" onClick={() => handleAction('search')} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff";}} onMouseLeave={(e) => {e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)";}} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)";}} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)";}}>🏢 My Businesses</button>
-          <button type="button" onClick={() => handleAction('update')} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff";}} onMouseLeave={(e) => {e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)";}} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)";}} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)";}}>✏️ Update Businesses</button>
-        </div>
+          {(flowMode === "ADD_WIZARD" || flowMode === "ADD_PRODUCT" || flowMode === "ADD_DEAL" || flowMode === "UPDATE_VALUE") && (<div style={{ display: "flex", gap: "10px", padding: "10px 14px", overflowX: "auto", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-primary)" }}> <button type="button" onClick={() => handleAction("cancel_wizard")} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff"; }} onMouseLeave={(e) => { e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)"; }} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)"; }} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; }}> ❌ Cancel Setup </button></div>)}
+
+          <div style={{ display: "flex", gap: "10px", padding: "10px 14px", overflowX: "auto", borderTop: "1px solid var(--border-subtle)", background: "var(--bg-primary)" }}>
+            <button type="button" onClick={() => handleAction('add_new_business')} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff"; }} onMouseLeave={(e) => { e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)"; }} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)"; }} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; }}>➕ Add Business</button>
+            <button type="button" onClick={() => handleAction('search')} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff"; }} onMouseLeave={(e) => { e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)"; }} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)"; }} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; }}>🏢 My Businesses</button>
+            <button type="button" onClick={() => handleAction('update')} style={{ background: "var(--bg-surface-2)", color: "var(--text-primary)", border: "1px solid var(--border-subtle)", borderRadius: "999px", padding: "10px 90px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontSize: "13px", transition: "0.2s" }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; e.currentTarget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.18)"; e.currentTarget.style.background = "var(--color-primary)"; e.currentTarget.style.color = "#fff"; }} onMouseLeave={(e) => { e.currentTarget.style.transform = "translateY(0) scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; e.currentTarget.style.background = "var(--bg-surface-2)"; e.currentTarget.style.color = "var(--text-primary)"; }} onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.97)"; }} onMouseUp={(e) => { e.currentTarget.style.transform = "translateY(-3px) scale(1.04)"; }}>✏️ Update Businesses</button>
+          </div>
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -1333,7 +1336,7 @@ const ChatArea = (props) => {
             </span>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button 
+            <button
               onClick={() => setCompareList([])}
               style={{
                 background: 'transparent', border: '1px solid rgba(255,255,255,0.4)',
@@ -1343,7 +1346,7 @@ const ChatArea = (props) => {
             >
               Clear
             </button>
-            <button 
+            <button
               onClick={handleCompareSubmit}
               disabled={compareList.length < 2}
               style={{
@@ -1390,7 +1393,7 @@ const ChatArea = (props) => {
               <h3 style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 📊 Side-by-Side Business Comparison
               </h3>
-              <button 
+              <button
                 onClick={() => setIsCompareOpen(false)}
                 style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
               >

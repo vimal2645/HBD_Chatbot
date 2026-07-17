@@ -5,7 +5,6 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from chat_router import handle_chat_query
-from db_pool import SQLiteConnectionPool
 
 class SearchRequest(BaseModel):
     query: str
@@ -31,7 +30,7 @@ def mock_get_last_metadata(session_id):
                 if isinstance(data, dict):
                     msg_type = data.get("type", "")
                     meta = data.get("search_metadata")
-                    if meta and msg_type in ("database", "database_products", "flow_step", "faq"):
+                    if meta and msg_type in ("database", "database_products", "flow_step", "faq", "blinkit_product_card"):
                         return meta
             except Exception:
                 continue
@@ -91,5 +90,17 @@ async def run_all():
     await test_scenario("11. My Business (No Auth)", "show my business", sid)
     await test_scenario("12. Garbage Query", "sdkfljsdlkfjls", sid)
     await test_scenario("13. Direct City+Cat", "hospitals in pune", sid)
+
+    print("\n--- BLINKIT guided PRODUCT FLOW ---")
+    await test_scenario("14. Blinkit Entry", "Blinkit", sid)
+    # The categories are dynamic, but 'Atta, Rice & Dal' is a standard sample category in the DB
+    await test_scenario("15. Select Category", "Atta, Rice & Dal", sid)
+    await test_scenario("16. Select Subcategory", "Rajma Chhole Others", sid)
+
+    print("\n--- BIGBASKET guided PRODUCT FLOW ---")
+    await test_scenario("17. BigBasket Entry", "BigBasket", sid)
+    # 'Bakery, Cakes & Dairy' is a standard category in the DB
+    await test_scenario("18. Select BigBasket Category", "Bakery, Cakes & Dairy", sid)
+    await test_scenario("19. Select BigBasket Subcategory", "bakery-snacks", sid)
 
 asyncio.run(run_all())

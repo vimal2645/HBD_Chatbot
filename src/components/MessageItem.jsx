@@ -68,7 +68,7 @@ function CopyButton({ text }) {
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {}
+    } catch { }
   };
   return (
     <button
@@ -104,7 +104,7 @@ function SpeakerButton({ text, language }) {
 
   const handleSpeak = (e) => {
     e.stopPropagation();
-    
+
     if (isPlaying) {
       window.speechSynthesis.cancel();
       setIsPlaying(false);
@@ -129,7 +129,7 @@ function SpeakerButton({ text, language }) {
     if (language === 'hi') langCode = 'hi-IN';
     else if (language === 'te') langCode = 'te-IN';
     else if (language === 'gu') langCode = 'gu-IN';
-    
+
     utterance.lang = langCode;
 
     // Try to find a matching voice
@@ -255,7 +255,7 @@ function getOpeningStatus(openingHours, category) {
   if (hours.toLowerCase().includes('24 hours') || hours.toLowerCase().includes('24x7')) {
     return { hours, isOpen: true, statusText: "Open Now (24 Hours)" };
   }
-  
+
   try {
     const now = new Date();
     const currentHour = now.getHours();
@@ -270,7 +270,7 @@ function getOpeningStatus(openingHours, category) {
         if (ampm === 'AM' && h === 12) h = 0;
         return h;
       };
-      
+
       const startH = parseTime(matches[0]);
       const endH = parseTime(matches[1]);
       const isOpen = currentHour >= startH && currentHour < endH;
@@ -283,7 +283,7 @@ function getOpeningStatus(openingHours, category) {
   } catch (e) {
     console.error("Error parsing hours:", e);
   }
-  
+
   return { hours, isOpen: true, statusText: "Open Now" };
 }
 
@@ -304,6 +304,713 @@ function ProductCard({ prod, onAction }) {
   const description = prod.description || prod.business_description;
 
   const coverStyle = getAvatarStyle(name + "_prod");
+  const isBlinkit = prod.marketplace_name?.toLowerCase() === 'blinkit';
+  const isBigBasket = prod.marketplace_name?.toLowerCase() === 'bigbasket';
+  const isFlipkart = prod.marketplace_name?.toLowerCase() === 'flipkart';
+  const isAmazon = prod.marketplace_name?.toLowerCase() === 'amazon';
+
+
+  if (isBigBasket) {
+    const formattedPrice = prod.price !== undefined ? Number(prod.price).toFixed(2) : null;
+    const formattedMrp = prod.mrp !== undefined ? Number(prod.mrp).toFixed(2) : null;
+    const formattedDiscount = prod.discount !== undefined ? Number(prod.discount).toFixed(2) : null;
+    const avail = prod.availability ? 'In Stock' : 'Out of Stock';
+
+    return (
+      <div className="prod-card bigbasket-prod-card" style={{
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 'var(--radius-lg)',
+        overflow: 'hidden',
+        boxShadow: 'var(--shadow-sm)',
+        transition: 'all 200ms ease',
+        display: 'flex',
+        flexDirection: 'column',
+        position: 'relative',
+        height: '100%',
+        animation: 'slideUp 300ms ease',
+      }}
+        onMouseEnter={e => { e.currentTarget.style.boxShadow = 'var(--shadow-md)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+        onMouseLeave={e => { e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+      >
+        {/* Cover image or fallback */}
+        <div style={{
+          height: 140,
+          position: 'relative',
+          overflow: 'hidden',
+          background: '#ffffff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '8px',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}>
+          {imageUrl ? (
+            <img 
+              src={imageUrl} 
+              alt={name} 
+              style={{ 
+                maxHeight: '100%', 
+                maxWidth: '100%', 
+                objectFit: 'contain',
+                transition: 'transform 300ms ease'
+              }}
+              onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.05)'; }}
+              onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+            />
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', fontSize: 32 }}>
+              📦
+            </div>
+          )}
+          {/* Availability Badge */}
+          <span style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            padding: '2px 8px',
+            borderRadius: 999,
+            fontSize: '0.6rem',
+            fontWeight: 700,
+            background: prod.availability ? '#d1fae5' : '#fee2e2',
+            color: prod.availability ? '#065f46' : '#991b1b',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+          }}>
+            {avail}
+          </span>
+        </div>
+
+        {/* Card Body */}
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: 12 }}>
+          {/* Category tags */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+            <span className="badge badge-primary" style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase' }}>
+              {category}
+            </span>
+            <span style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase', background: '#dcfce7', color: '#16a34a', borderRadius: 'var(--radius-full)' }}>
+              BigBasket
+            </span>
+          </div>
+
+          {/* Product Name */}
+          <h4 style={{
+            fontSize: '0.85rem',
+            fontWeight: 800,
+            margin: '0 0 6px 0',
+            color: 'var(--text-primary)',
+            lineHeight: 1.3,
+            height: 36,
+            overflow: 'hidden',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical'
+          }} title={name}>
+            {name}
+          </h4>
+
+          {/* Details / Description Panel */}
+          <div style={{
+            background: 'var(--bg-surface-2)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '6px 8px',
+            border: '1px solid var(--border-subtle)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            fontSize: '0.7rem',
+            marginBottom: 8,
+          }}>
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Brand: </span>
+              <strong style={{ color: 'var(--text-primary)' }}>{brand || 'Generic Brand'}</strong>
+            </div>
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Quantity: </span>
+              <strong style={{ color: 'var(--text-primary)' }}>{prod.quantity || 'N/A'}</strong>
+            </div>
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Status: </span>
+              <strong style={{ color: prod.availability ? '#10b981' : '#ef4444' }}>{avail}</strong>
+            </div>
+          </div>
+
+          {/* Price & Action row */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 'auto', paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                <span style={{ fontSize: '1rem', fontWeight: 800, color: '#059669' }}>
+                  ₹{formattedPrice}
+                </span>
+                {formattedMrp && formattedMrp !== formattedPrice && (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textDecoration: 'line-through' }}>
+                    ₹{formattedMrp}
+                  </span>
+                )}
+              </div>
+              {formattedDiscount && Number(formattedDiscount) > 0 && (
+                <span style={{ fontSize: '0.6rem', color: '#059669', fontWeight: 700 }}>
+                  Save ₹{formattedDiscount}
+                </span>
+              )}
+            </div>
+
+            {productUrl && (
+              <a href={productUrl} target="_blank" rel="noopener noreferrer" style={{
+                marginLeft: 'auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 4,
+                padding: '6px 12px',
+                borderRadius: 8,
+                background: 'linear-gradient(135deg, #f59e0b, #ea580c)',
+                color: 'white',
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                textDecoration: 'none',
+                boxShadow: '0 2px 6px rgba(234,88,12,0.15)',
+                transition: 'all 150ms ease'
+              }}
+                onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.02)'; }}
+                onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+              >
+                Order <ExternalLink size={10} />
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isBlinkit) {
+    const formattedPrice = prod.price !== undefined ? Number(prod.price).toFixed(2) : null;
+    const formattedMrp = prod.mrp !== undefined ? Number(prod.mrp).toFixed(2) : null;
+    const formattedDiscount = prod.discount !== undefined ? Number(prod.discount).toFixed(2) : null;
+    const avail = prod.availability ? 'In Stock' : 'Out of Stock';
+
+    return (
+      <div className="prod-card blinkit-prod-card" style={{
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 'var(--radius-lg)',
+        overflow: 'hidden',
+        boxShadow: 'var(--shadow-sm)',
+        transition: 'all 200ms ease',
+        display: 'flex',
+        flexDirection: 'column',
+        position: 'relative',
+        height: '100%',
+        animation: 'slideUp 300ms ease',
+      }}
+        onMouseEnter={e => { e.currentTarget.style.boxShadow = 'var(--shadow-md)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+        onMouseLeave={e => { e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+      >
+        {/* Cover image or fallback */}
+        <div style={{
+          height: 140,
+          position: 'relative',
+          overflow: 'hidden',
+          background: '#ffffff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '8px',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}>
+          {imageUrl ? (
+            <img 
+              src={imageUrl} 
+              alt={name} 
+              style={{ 
+                maxHeight: '100%', 
+                maxWidth: '100%', 
+                objectFit: 'contain',
+                transition: 'transform 300ms ease'
+              }}
+              onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.05)'; }}
+              onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+            />
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', fontSize: 32 }}>
+              📦
+            </div>
+          )}
+          {/* Availability Badge */}
+          <span style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            padding: '2px 8px',
+            borderRadius: 999,
+            fontSize: '0.6rem',
+            fontWeight: 700,
+            background: prod.availability ? '#d1fae5' : '#fee2e2',
+            color: prod.availability ? '#065f46' : '#991b1b',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+          }}>
+            {avail}
+          </span>
+        </div>
+
+        {/* Card Body */}
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: 12 }}>
+          {/* Category tags */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+            <span className="badge badge-primary" style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase' }}>
+              {category}
+            </span>
+            <span style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase', background: '#ffe4e6', color: '#be123c', borderRadius: 'var(--radius-full)' }}>
+              Blinkit
+            </span>
+          </div>
+
+          {/* Product Name */}
+          <h4 style={{
+            fontSize: '0.85rem',
+            fontWeight: 800,
+            margin: '0 0 6px 0',
+            color: 'var(--text-primary)',
+            lineHeight: 1.3,
+            height: 36,
+            overflow: 'hidden',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical'
+          }} title={name}>
+            {name}
+          </h4>
+
+          {/* Details / Description Panel */}
+          <div style={{
+            background: 'var(--bg-surface-2)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '6px 8px',
+            border: '1px solid var(--border-subtle)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            fontSize: '0.7rem',
+            marginBottom: 8,
+          }}>
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Brand: </span>
+              <strong style={{ color: 'var(--text-primary)' }}>{brand}</strong>
+            </div>
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Quantity: </span>
+              <strong style={{ color: 'var(--text-primary)' }}>{prod.quantity || 'N/A'}</strong>
+            </div>
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Status: </span>
+              <strong style={{ color: prod.availability ? '#10b981' : '#ef4444' }}>{avail}</strong>
+            </div>
+          </div>
+
+          {/* Price & Action row */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 'auto', paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                <span style={{ fontSize: '1rem', fontWeight: 800, color: '#059669' }}>
+                  ₹{formattedPrice}
+                </span>
+                {formattedMrp && formattedMrp !== formattedPrice && (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textDecoration: 'line-through' }}>
+                    ₹{formattedMrp}
+                  </span>
+                )}
+              </div>
+              {formattedDiscount && Number(formattedDiscount) > 0 && (
+                <span style={{ fontSize: '0.6rem', color: '#059669', fontWeight: 700 }}>
+                  Save ₹{formattedDiscount}
+                </span>
+              )}
+            </div>
+
+            {productUrl && (
+              <a href={productUrl} target="_blank" rel="noopener noreferrer" style={{
+                marginLeft: 'auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 4,
+                padding: '6px 12px',
+                borderRadius: 8,
+                background: 'linear-gradient(135deg, #f59e0b, #ea580c)',
+                color: 'white',
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                textDecoration: 'none',
+                boxShadow: '0 2px 6px rgba(234,88,12,0.15)',
+                transition: 'all 150ms ease'
+              }}
+                onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.02)'; }}
+                onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+              >
+                Order <ExternalLink size={10} />
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isFlipkart) {
+    const formattedPrice = prod.price !== undefined ? Number(prod.price).toFixed(2) : null;
+    const formattedMrp = prod.mrp !== undefined ? Number(prod.mrp).toFixed(2) : null;
+    const formattedDiscount = prod.discount !== undefined ? Number(prod.discount).toFixed(2) : null;
+    const avail = prod.availability ? 'In Stock' : 'Out of Stock';
+
+    return (
+      <div className="prod-card flipkart-prod-card" style={{
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 'var(--radius-lg)',
+        overflow: 'hidden',
+        boxShadow: 'var(--shadow-sm)',
+        transition: 'all 200ms ease',
+        display: 'flex',
+        flexDirection: 'column',
+        position: 'relative',
+        height: '100%',
+        animation: 'slideUp 300ms ease',
+      }}
+        onMouseEnter={e => { e.currentTarget.style.boxShadow = 'var(--shadow-md)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+        onMouseLeave={e => { e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+      >
+        {/* Cover image or fallback */}
+        <div style={{
+          height: 140,
+          position: 'relative',
+          overflow: 'hidden',
+          background: '#ffffff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '8px',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}>
+          {imageUrl ? (
+            <img 
+              src={imageUrl} 
+              alt={name} 
+              style={{ 
+                maxHeight: '100%', 
+                maxWidth: '100%', 
+                objectFit: 'contain',
+                transition: 'transform 300ms ease'
+              }}
+              onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.05)'; }}
+              onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+            />
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', fontSize: 32 }}>
+              📦
+            </div>
+          )}
+          {/* Availability Badge */}
+          <span style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            padding: '2px 8px',
+            borderRadius: 999,
+            fontSize: '0.6rem',
+            fontWeight: 700,
+            background: prod.availability ? '#d1fae5' : '#fee2e2',
+            color: prod.availability ? '#065f46' : '#991b1b',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+          }}>
+            {avail}
+          </span>
+        </div>
+
+        {/* Card Body */}
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: 12 }}>
+          {/* Category tags */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+            <span className="badge badge-primary" style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase' }}>
+              {category}
+            </span>
+            <span style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase', background: '#dbeafe', color: '#1d4ed8', borderRadius: 'var(--radius-full)' }}>
+              Flipkart
+            </span>
+          </div>
+
+          {/* Product Name */}
+          <h4 style={{
+            fontSize: '0.85rem',
+            fontWeight: 800,
+            margin: '0 0 6px 0',
+            color: 'var(--text-primary)',
+            lineHeight: 1.3,
+            height: 36,
+            overflow: 'hidden',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical'
+          }} title={name}>
+            {name}
+          </h4>
+
+          {/* Details / Description Panel */}
+          <div style={{
+            background: 'var(--bg-surface-2)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '6px 8px',
+            border: '1px solid var(--border-subtle)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            fontSize: '0.7rem',
+            marginBottom: 8,
+          }}>
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Brand: </span>
+              <strong style={{ color: 'var(--text-primary)' }}>{brand || 'Generic Brand'}</strong>
+            </div>
+            {description && (
+              <div style={{
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}>
+                <span style={{ color: 'var(--text-muted)' }}>Specs: </span>
+                <strong style={{ color: 'var(--text-primary)' }} title={description}>{description}</strong>
+              </div>
+            )}
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Status: </span>
+              <strong style={{ color: prod.availability ? '#10b981' : '#ef4444' }}>{avail}</strong>
+            </div>
+          </div>
+
+          {/* Price & Action row */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 'auto', paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                <span style={{ fontSize: '1rem', fontWeight: 800, color: '#059669' }}>
+                  ₹{formattedPrice}
+                </span>
+                {formattedMrp && formattedMrp !== formattedPrice && (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textDecoration: 'line-through' }}>
+                    ₹{formattedMrp}
+                  </span>
+                )}
+              </div>
+              {formattedDiscount && Number(formattedDiscount) > 0 && (
+                <span style={{ fontSize: '0.6rem', color: '#059669', fontWeight: 700 }}>
+                  Save ₹{formattedDiscount}
+                </span>
+              )}
+            </div>
+
+            {productUrl && (
+              <a href={productUrl} target="_blank" rel="noopener noreferrer" style={{
+                marginLeft: 'auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 4,
+                padding: '6px 12px',
+                borderRadius: 8,
+                background: 'linear-gradient(135deg, #2874f0, #1259c3)',
+                color: 'white',
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                textDecoration: 'none',
+                boxShadow: '0 2px 6px rgba(40,116,240,0.15)',
+                transition: 'all 150ms ease'
+              }}
+                onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.02)'; }}
+                onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+              >
+                Order <ExternalLink size={10} />
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isAmazon) {
+    const formattedPrice = prod.price !== undefined ? Number(prod.price).toFixed(2) : null;
+    const formattedMrp = prod.mrp !== undefined ? Number(prod.mrp).toFixed(2) : null;
+    const formattedDiscount = prod.discount !== undefined ? Number(prod.discount).toFixed(2) : null;
+    const avail = prod.availability ? 'In Stock' : 'Out of Stock';
+
+    return (
+      <div className="prod-card amazon-prod-card" style={{
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 'var(--radius-lg)',
+        overflow: 'hidden',
+        boxShadow: 'var(--shadow-sm)',
+        transition: 'all 200ms ease',
+        display: 'flex',
+        flexDirection: 'column',
+        position: 'relative',
+        height: '100%',
+        animation: 'slideUp 300ms ease',
+      }}
+        onMouseEnter={e => { e.currentTarget.style.boxShadow = 'var(--shadow-md)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+        onMouseLeave={e => { e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+      >
+        {/* Cover image or fallback */}
+        <div style={{
+          height: 140,
+          position: 'relative',
+          overflow: 'hidden',
+          background: '#ffffff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '8px',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}>
+          {imageUrl ? (
+            <img 
+              src={imageUrl} 
+              alt={name} 
+              style={{ 
+                maxHeight: '100%', 
+                maxWidth: '100%', 
+                objectFit: 'contain',
+                transition: 'transform 300ms ease'
+              }}
+              onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.05)'; }}
+              onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+            />
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', fontSize: 32 }}>
+              📦
+            </div>
+          )}
+          {/* Availability Badge */}
+          <span style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            padding: '2px 8px',
+            borderRadius: 999,
+            fontSize: '0.6rem',
+            fontWeight: 700,
+            background: prod.availability ? '#d1fae5' : '#fee2e2',
+            color: prod.availability ? '#065f46' : '#991b1b',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+          }}>
+            {avail}
+          </span>
+        </div>
+
+        {/* Card Body */}
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, padding: 12 }}>
+          {/* Category tags */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+            <span className="badge badge-primary" style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase' }}>
+              {category}
+            </span>
+            <span style={{ fontSize: '0.6rem', fontWeight: 700, padding: '2px 8px', textTransform: 'uppercase', background: '#ffe6c7', color: '#e65100', borderRadius: 'var(--radius-full)' }}>
+              Amazon
+            </span>
+          </div>
+
+          {/* Product Name */}
+          <h4 style={{
+            fontSize: '0.85rem',
+            fontWeight: 800,
+            margin: '0 0 6px 0',
+            color: 'var(--text-primary)',
+            lineHeight: 1.3,
+            height: 36,
+            overflow: 'hidden',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical'
+          }} title={name}>
+            {name}
+          </h4>
+
+          {/* Details / Description Panel */}
+          <div style={{
+            background: 'var(--bg-surface-2)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '6px 8px',
+            border: '1px solid var(--border-subtle)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            fontSize: '0.7rem',
+            marginBottom: 8,
+          }}>
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Brand: </span>
+              <strong style={{ color: 'var(--text-primary)' }}>{brand || 'Generic Brand'}</strong>
+            </div>
+            {prod.asin && (
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>ASIN: </span>
+                <strong style={{ color: 'var(--text-primary)' }}>{prod.asin}</strong>
+              </div>
+            )}
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Rating: </span>
+              <strong style={{ color: 'var(--text-primary)' }}>⭐ {prod.rating || 0} ({prod.reviews || 0} reviews)</strong>
+            </div>
+          </div>
+
+          {/* Price & Action row */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 'auto', paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                <span style={{ fontSize: '1rem', fontWeight: 800, color: '#059669' }}>
+                  ₹{formattedPrice}
+                </span>
+                {formattedMrp && formattedMrp !== formattedPrice && (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textDecoration: 'line-through' }}>
+                    ₹{formattedMrp}
+                  </span>
+                )}
+              </div>
+              {formattedDiscount && Number(formattedDiscount) > 0 && (
+                <span style={{ fontSize: '0.6rem', color: '#059669', fontWeight: 700 }}>
+                  Save ₹{formattedDiscount}
+                </span>
+              )}
+            </div>
+
+            {productUrl && (
+              <a href={productUrl} target="_blank" rel="noopener noreferrer" style={{
+                marginLeft: 'auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 4,
+                padding: '6px 12px',
+                borderRadius: 8,
+                background: 'linear-gradient(135deg, #ff9900, #e67e00)',
+                color: 'white',
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                textDecoration: 'none',
+                boxShadow: '0 2px 6px rgba(255,153,0,0.15)',
+                transition: 'all 150ms ease'
+              }}
+                onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.02)'; }}
+                onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+              >
+                Order <ExternalLink size={10} />
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+
 
   return (
     <div className="prod-card" style={{
@@ -318,8 +1025,8 @@ function ProductCard({ prod, onAction }) {
       position: 'relative',
       height: '100%'
     }}
-    onMouseEnter={e => { e.currentTarget.style.boxShadow = 'var(--shadow-md)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
-    onMouseLeave={e => { e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+      onMouseEnter={e => { e.currentTarget.style.boxShadow = 'var(--shadow-md)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+      onMouseLeave={e => { e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; e.currentTarget.style.transform = 'translateY(0)'; }}
     >
       {/* Cover image or fallback */}
       <div style={{
@@ -354,11 +1061,11 @@ function ProductCard({ prod, onAction }) {
           )}
         </div>
 
-        <h4 style={{ 
-          fontSize: '0.85rem', 
-          fontWeight: 800, 
-          margin: '0 0 6px 0', 
-          color: 'var(--text-primary)', 
+        <h4 style={{
+          fontSize: '0.85rem',
+          fontWeight: 800,
+          margin: '0 0 6px 0',
+          color: 'var(--text-primary)',
           lineHeight: 1.3,
           height: 36,
           overflow: 'hidden',
@@ -408,8 +1115,8 @@ function ProductCard({ prod, onAction }) {
               textDecoration: 'none',
               transition: 'all 150ms ease'
             }}
-            onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.02)'; }}
-            onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+              onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.02)'; }}
+              onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
             >
               View <ExternalLink size={10} />
             </a>
@@ -518,27 +1225,27 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
   };
 
   return (
-    <div className="biz-card" 
-    onClick={(e) => {
-      if (e.target.closest("button")) return;
-      if (mode === "update_select") {
-        onAction("select_business_for_update", biz);
-      }
-    }} style={{
-      cursor: mode === "update_select" ? "pointer" : "default",
-      background: 'var(--bg-surface)',
-      border: '1px solid var(--border-subtle)',
-      borderRadius: 'var(--radius-lg)',
-      overflow: 'hidden',
-      boxShadow: 'var(--shadow-sm)',
-      transition: 'all 200ms ease',
-      display: 'flex',
-      flexDirection: 'column',
-      position: 'relative',
-      height: '100%'
-    }}
-    onMouseEnter={e => { e.currentTarget.style.boxShadow = 'var(--shadow-md)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
-    onMouseLeave={e => { e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+    <div className="biz-card"
+      onClick={(e) => {
+        if (e.target.closest("button")) return;
+        if (mode === "update_select") {
+          onAction("select_business_for_update", biz);
+        }
+      }} style={{
+        cursor: mode === "update_select" ? "pointer" : "default",
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 'var(--radius-lg)',
+        overflow: 'hidden',
+        boxShadow: 'var(--shadow-sm)',
+        transition: 'all 200ms ease',
+        display: 'flex',
+        flexDirection: 'column',
+        position: 'relative',
+        height: '100%'
+      }}
+      onMouseEnter={e => { e.currentTarget.style.boxShadow = 'var(--shadow-md)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+      onMouseLeave={e => { e.currentTarget.style.boxShadow = 'var(--shadow-sm)'; e.currentTarget.style.transform = 'translateY(0)'; }}
     >
       {/* Premium Cover Banner */}
       <div style={{
@@ -579,12 +1286,12 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
         color: '#ffffff',
         zIndex: 5
       }}
-      onClick={handleCompareToggle}
+        onClick={handleCompareToggle}
       >
-        <input 
-          type="checkbox" 
-          checked={isComparing || false} 
-          onChange={() => {}} 
+        <input
+          type="checkbox"
+          checked={isComparing || false}
+          onChange={() => { }}
           style={{ cursor: 'pointer', width: 10, height: 10 }}
         />
         Compare
@@ -613,7 +1320,7 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
       </div>
 
       {/* Bookmark Toggle */}
-      <button 
+      <button
         onClick={handleBookmarkToggle}
         style={{
           position: 'absolute',
@@ -666,11 +1373,11 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
           </span>
         </div>
 
-        <h4 className="biz-card-name" style={{ 
-          fontSize: '0.9375rem', 
-          fontWeight: 800, 
-          margin: '0 0 4px 0', 
-          color: 'var(--text-primary)', 
+        <h4 className="biz-card-name" style={{
+          fontSize: '0.9375rem',
+          fontWeight: 800,
+          margin: '0 0 4px 0',
+          color: 'var(--text-primary)',
           lineHeight: 1.3,
           display: 'flex',
           alignItems: 'center',
@@ -765,8 +1472,8 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
               padding: '8px', borderRadius: 8, background: 'var(--bg-surface-2)',
               color: 'var(--color-primary)', transition: 'all 150ms ease'
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-primary-light)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-surface-2)'; }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-primary-light)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-surface-2)'; }}
             >
               <Phone size={13} />
             </a>
@@ -778,13 +1485,13 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
 
           {biz.website_url ? (
             <a href={biz.website_url.startsWith('http') ? biz.website_url : `https://${biz.website_url}`}
-               target="_blank" rel="noopener noreferrer" title="Website" style={{
-                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                 padding: '8px', borderRadius: 8, background: 'var(--bg-surface-2)',
-                 color: 'var(--color-primary)', transition: 'all 150ms ease'
-               }}
-               onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-primary-light)'; }}
-               onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-surface-2)'; }}
+              target="_blank" rel="noopener noreferrer" title="Website" style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: '8px', borderRadius: 8, background: 'var(--bg-surface-2)',
+                color: 'var(--color-primary)', transition: 'all 150ms ease'
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-primary-light)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-surface-2)'; }}
             >
               <Globe size={13} />
             </a>
@@ -795,13 +1502,13 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
           )}
 
           <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(biz.business_name + ' ' + (biz.address || '') + ' ' + (biz.city || ''))}`}
-             target="_blank" rel="noopener noreferrer" title="Directions" style={{
-               display: 'flex', alignItems: 'center', justifyContent: 'center',
-               padding: '8px', borderRadius: 8, background: 'var(--bg-surface-2)',
-               color: 'var(--color-primary)', transition: 'all 150ms ease'
-             }}
-             onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-primary-light)'; }}
-             onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-surface-2)'; }}
+            target="_blank" rel="noopener noreferrer" title="Directions" style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: '8px', borderRadius: 8, background: 'var(--bg-surface-2)',
+              color: 'var(--color-primary)', transition: 'all 150ms ease'
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-primary-light)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-surface-2)'; }}
           >
             <Compass size={13} />
           </a>
@@ -811,13 +1518,13 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
             padding: '8px', borderRadius: 8, background: 'var(--bg-surface-2)',
             color: 'var(--color-primary)', transition: 'all 150ms ease'
           }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-primary-light)'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-surface-2)'; }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-primary-light)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-surface-2)'; }}
           >
             <Share2 size={13} />
           </button>
         </div>
-        
+
         {/* Tab Buttons */}
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
           {/* Reviews Toggle Button */}
@@ -870,7 +1577,7 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
         </div>
 
         {showReviews && (
-          <ReviewSection 
+          <ReviewSection
             businessId={biz.global_business_id}
             initialRatings={localRatings}
             initialReviewsCount={localReviewsCount}
@@ -884,7 +1591,7 @@ function BusinessCard({ biz, onAction, isLoggedIn, session, compareList, mode })
         )}
 
         {showDealsAndProducts && (
-          <DealsAndProductsSection 
+          <DealsAndProductsSection
             businessId={biz.global_business_id}
             ownerId={biz.owner_id}
             isLoggedIn={isLoggedIn}
@@ -1106,22 +1813,22 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '8px 12px', fontSize: '0.8125rem' }}>
               <strong style={{ color: 'var(--text-muted)' }}>Business Name:</strong>
               <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{data.name}</span>
-              
+
               <strong style={{ color: 'var(--text-muted)' }}>Category:</strong>
               <span style={{ color: 'var(--text-primary)' }}>{data.category}</span>
-              
+
               <strong style={{ color: 'var(--text-muted)' }}>Registered Phone:</strong>
               <span style={{ color: 'var(--text-primary)' }}>{data.phone}</span>
-              
+
               <strong style={{ color: 'var(--text-muted)' }}>Registered Email:</strong>
               <span style={{ color: 'var(--text-primary)' }}>{data.email}</span>
-              
+
               <strong style={{ color: 'var(--text-muted)' }}>Address:</strong>
               <span style={{ color: 'var(--text-primary)' }}>{data.address}</span>
-              
+
               <strong style={{ color: 'var(--text-muted)' }}>City / State:</strong>
               <span style={{ color: 'var(--text-primary)' }}>{data.city}, {data.state}</span>
-              
+
               {data.area && (
                 <>
                   <strong style={{ color: 'var(--text-muted)' }}>Area:</strong>
@@ -1142,7 +1849,7 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
                 );
               })}
             </div>
-            
+
             <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
               <button
                 onClick={() => onAction('wizard_confirm')}
@@ -1533,10 +2240,10 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
               background: 'blue',
               cursor: 'pointer',
               gap: '10px',
-              margin:'10px',
+              margin: '10px',
               fontWeight: 600
             }}
-            >
+          >
             ✏️ Change Email
           </button>
         </div>
@@ -1584,12 +2291,12 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
             <div className="chat-bubble-bot">{message.intro}</div>
           </div>
         )}
-        
+
         {/* Responsive Grid Layout for Product Cards */}
-        <div style={{ 
-          display: 'grid', 
-          gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', 
-          gap: 14, 
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+          gap: 14,
           marginTop: 10,
           marginBottom: 10
         }}>
@@ -1671,12 +2378,12 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
             <div className="chat-bubble-bot">{message.intro}</div>
           </div>
         )}
-        
+
         {/* Responsive Grid Layout for Business Cards */}
-        <div style={{ 
-          display: 'grid', 
-          gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', 
-          gap: 14, 
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+          gap: 14,
           marginTop: 10,
           marginBottom: 10
         }}>
@@ -2025,9 +2732,9 @@ const MessageItem = ({ message, onAction, isLoggedIn, session, language = 'en', 
 function ActionBtn({ onClick, color, icon, children }) {
   const colors = {
     indigo: { bg: 'var(--color-primary)', text: 'white', hover: 'var(--color-primary-hover)' },
-    blue:   { bg: '#3b82f6', text: 'white', hover: '#2563eb' },
-    green:  { bg: '#10b981', text: 'white', hover: '#059669' },
-    red:    { bg: '#ef4444', text: 'white', hover: '#dc2626' },
+    blue: { bg: '#3b82f6', text: 'white', hover: '#2563eb' },
+    green: { bg: '#10b981', text: 'white', hover: '#059669' },
+    red: { bg: '#ef4444', text: 'white', hover: '#dc2626' },
   };
   const c = colors[color] || colors.indigo;
   return (
