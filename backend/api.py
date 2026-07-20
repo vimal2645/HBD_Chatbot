@@ -6,19 +6,19 @@ import os
 import re
 import uuid
 import json
-import sqlite3
 from typing import Optional, List
 from datetime import datetime
 from dotenv import load_dotenv
 import threading
 import anyio
-from db_pool import pool, db_context, get_db
 from mysql_pool import mysql_ctx, test_mysql_connection
 import smtplib
 import csv
 import random
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from assistant_manager import parse_query_nlu
+from db_init import initialize_database
 
 load_dotenv()
 
@@ -35,76 +35,12 @@ _DB_ENV = os.getenv("DATABASE_URL") or "google_map_data.db"
 # Always resolve relative to THIS file's directory so it works regardless of CWD
 DATABASE_URL = _DB_ENV if os.path.isabs(_DB_ENV) else os.path.join(_BASE_DIR, os.path.basename(_DB_ENV))
 
-print(f"[DB] SQLite PATH: {os.path.abspath(DATABASE_URL)}")
 CSV_PATH = os.path.join(_BASE_DIR, "g_map_master_table_sample.csv")
 
 # ── Verify MySQL connection on startup ──────────────────────────────
 test_mysql_connection()
-print(f"[DB] SQLite (app data): {DATABASE_URL}")
-
-# Self-healing: Ensure bookmarks table exists on startup
-try:
-    conn = sqlite3.connect(DATABASE_URL)
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS bookmarks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT,
-        business_id INTEGER,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (business_id) REFERENCES g_map_master_table(global_business_id)
-    )
-    """)
-    conn.commit()
-    conn.close()
-    print("[DB] Bookmarks table verified successfully.")
-except Exception as startup_err:
-    print(f"[DB] Error verifying bookmarks table: {startup_err}")
-
-# Ensure reviews table columns exist
-try:
-    conn = sqlite3.connect(DATABASE_URL)
-    conn.execute('''
-    CREATE TABLE IF NOT EXISTS reviews (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        business_id INTEGER NOT NULL,
-        user_id TEXT NOT NULL,
-        rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
-        comment TEXT,
-        created_at TEXT DEFAULT (datetime('now', 'localtime'))
-    )
-    ''')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_reviews_business_id ON reviews(business_id)')
-    try:
-        conn.execute("ALTER TABLE reviews ADD COLUMN merchant_reply TEXT;")
-    except:
-        pass
-    try:
-        conn.execute("ALTER TABLE reviews ADD COLUMN helpful_votes INTEGER DEFAULT 0;")
-    except:
-        pass
-    conn.commit()
-    conn.close()
-    print("[DB] Reviews table verified successfully.")
-except Exception as startup_err:
-    print(f"[DB] Error verifying reviews table: {startup_err}")
-
-# Ensure business photos table exists
-try:
-    conn = sqlite3.connect(DATABASE_URL)
-    conn.execute('''
-    CREATE TABLE IF NOT EXISTS business_photos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        business_id INTEGER NOT NULL,
-        photo_url TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now', 'localtime')),
-        FOREIGN KEY (business_id) REFERENCES g_map_master_table(global_business_id) ON DELETE CASCADE
-    )
-    ''')
-    conn.commit()
-    conn.close()
-    print("[DB] Business photos table verified successfully.")
-except Exception as startup_err:
-    print(f"[DB] Error verifying business photos table: {startup_err}")
+initialize_database()
+print(f"[DB] All data stored in MySQL: {os.getenv('MYSQL_DATABASE')}")
 
 
 
@@ -329,25 +265,12 @@ def lang_fetch(key, lang="en"):
         
     if not lang or lang == "en": return eng_val
     
-    # DYNAMIC TRANSLATION (Auto-Correction/Translation for 'all' languages)
-    try:
-        from llm_client import call_llm
-        from models import MODEL
-
-        prompt = f"Translate the following button label or UI text to language code '{lang}'. Return ONLY the translation. Text: '{eng_val}'"
-        res = call_llm([{"role": "user", "content": prompt}], model=MODEL)
-        translation = res.get("content", "").strip().replace("'", "").replace("\"", "")
-        if translation and len(translation) < 100:
-            if lang not in BACKEND_TRANSLATIONS: BACKEND_TRANSLATIONS[lang] = {}
-            BACKEND_TRANSLATIONS[lang][key] = translation
-            return translation
-    except Exception as e:
-        print(f"Translation Error for {lang}: {e}")
-    
     return eng_val
 
 # Table name constant
-BIZ_TABLE = "master_table"  # MySQL remote table
+BIZ_TABLE = "chatbot_add_business"  # MySQL remote table
+PRODUCT_TABLE = "chatbot_products"
+DEAL_TABLE = "chatbot_deals"
 
 # Helper: Map DB to Frontend
 def map_business_fields(biz_list):
@@ -401,7 +324,8 @@ def map_product_fields(prod_list):
             "image_url": prod.get("img_url"),
             "category_name": prod.get("category_name"),
             "product_url": prod.get("product_url"),
-            "description": prod.get("description")
+            "description": prod.get("description"),
+            "marketplace_name": prod.get("marketplace_name"),
         }
         mapped_list.append(mapped)
     return mapped_list
@@ -491,14 +415,13 @@ def check_prompt_injection(query: str) -> bool:
 # Audit Logging & User Helpers
 def log_audit_action(user_id: Optional[int], action: str, entity: str, entity_id: Optional[int], ip_address: Optional[str] = None):
     try:
-        conn = sqlite3.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO audit_logs (user_id, action, entity, entity_id, ip_address)
-            VALUES (?, ?, ?, ?, ?)
-        """, (user_id, action, entity, entity_id, ip_address))
-        conn.commit()
-        conn.close()
+        with mysql_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO chatbot_audit_logs (user_id, action, entity, entity_id, ip_address)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (user_id, action, entity, entity_id, ip_address))
+            conn.commit()
     except Exception as e:
         print(f"[AUDIT LOG] Error: {e}")
 
@@ -515,16 +438,18 @@ def get_current_user_id(authorization: Optional[str] = Header(None), session: Op
         phone = session.get("phone")
         email = session.get("email")
         if phone or email:
-            conn = sqlite3.connect(DATABASE_URL)
-            cur = conn.cursor()
-            if phone:
-                cur.execute("SELECT id FROM users WHERE phone = ?", (phone,))
-            else:
-                cur.execute("SELECT id FROM users WHERE email = ?", (email,))
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                return row[0]
+            try:
+                with mysql_ctx() as conn:
+                    cur = conn.cursor()
+                    if phone:
+                        cur.execute("SELECT id FROM chatbot_users WHERE phone = %s", (phone,))
+                    else:
+                        cur.execute("SELECT id FROM chatbot_users WHERE email = %s", (email,))
+                    row = cur.fetchone()
+                    if row:
+                        return row[0]
+            except Exception:
+                pass
     return None
 
 # Auth Request Models
@@ -551,20 +476,20 @@ def auth_register(req: RegisterRequest):
     if not clean_email and not clean_phone:
         raise HTTPException(400, "Either email or phone is required")
     pwd_hash = hash_password(req.password)
-    conn = sqlite3.connect(DATABASE_URL)
-    cur = conn.cursor()
     try:
-        cur.execute("""
-            INSERT INTO users (email, phone, password_hash, role) 
-            VALUES (?, ?, ?, ?)
-        """, (clean_email, clean_phone, pwd_hash, req.role or 'owner'))
-        user_id = cur.lastrowid
-        conn.commit()
-        log_audit_action(user_id, "REGISTER", "users", user_id, "system")
-    except sqlite3.IntegrityError:
-        conn.close()
-        raise HTTPException(400, "User with this email or phone already exists")
-    conn.close()
+        with mysql_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO chatbot_users (email, phone, password_hash, role) 
+                VALUES (%s, %s, %s, %s)
+            """, (clean_email, clean_phone, pwd_hash, req.role or 'owner'))
+            user_id = cur.lastrowid
+            conn.commit()
+            log_audit_action(user_id, "REGISTER", "chatbot_users", user_id, "system")
+    except Exception as e:
+        if "Duplicate entry" in str(e) or "1062" in str(e):
+            raise HTTPException(400, "User with this email or phone already exists")
+        raise HTTPException(400, str(e))
     token = generate_jwt_token({"id": user_id, "email": clean_email, "phone": clean_phone, "role": req.role or 'owner'})
     return {"success": True, "token": token, "user": {"id": user_id, "email": clean_email, "phone": clean_phone, "role": req.role or 'owner'}}
 
@@ -575,19 +500,18 @@ def auth_login(req: TokenLoginRequest):
     clean_phone = req.phone.strip() if req.phone else None
     if not clean_email and not clean_phone:
         raise HTTPException(400, "Either email or phone is required")
-    conn = sqlite3.connect(DATABASE_URL)
-    cur = conn.cursor()
-    if clean_email:
-        cur.execute("SELECT id, email, phone, password_hash, role FROM users WHERE email = ?", (clean_email,))
-    else:
-        cur.execute("SELECT id, email, phone, password_hash, role FROM users WHERE phone = ?", (clean_phone,))
-    row = cur.fetchone()
-    conn.close()
+    with mysql_ctx() as conn:
+        cur = conn.cursor()
+        if clean_email:
+            cur.execute("SELECT id, email, phone, password_hash, role FROM chatbot_users WHERE email = %s", (clean_email,))
+        else:
+            cur.execute("SELECT id, email, phone, password_hash, role FROM chatbot_users WHERE phone = %s", (clean_phone,))
+        row = cur.fetchone()
     if not row or not verify_password(req.password, row[3]):
         raise HTTPException(400, "Invalid credentials")
     user_id, u_email, u_phone, _, role = row
     token = generate_jwt_token({"id": user_id, "email": u_email, "phone": u_phone, "role": role})
-    log_audit_action(user_id, "LOGIN", "users", user_id, "system")
+    log_audit_action(user_id, "LOGIN", "chatbot_users", user_id, "system")
     return {"success": True, "token": token, "user": {"id": user_id, "email": u_email, "phone": u_phone, "role": role}}
 
 @app.post("/api/auth/forgot-password")
@@ -657,24 +581,23 @@ def verify_otp_phone(req: dict):
         from auth_utils import generate_jwt_token
         try:
             raw = get_businesses_by_phone(phone)
-            # Ensure user exists in users table
-            conn = sqlite3.connect(DATABASE_URL)
-            cur = conn.cursor()
-            cur.execute("SELECT id, role FROM users WHERE phone = ?", (phone,))
-            row = cur.fetchone()
-            if not row:
-                from auth_utils import hash_password
-                default_hash = hash_password("password123")
-                cur.execute("INSERT INTO users (phone, password_hash, role) VALUES (?, ?, 'owner')", (phone, default_hash))
-                user_id = cur.lastrowid
-                role = "owner"
-                conn.commit()
-            else:
-                user_id, role = row
-            conn.close()
+            # Ensure user exists in chatbot_users table
+            with mysql_ctx() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT id, role FROM chatbot_users WHERE phone = %s", (phone,))
+                row = cur.fetchone()
+                if not row:
+                    from auth_utils import hash_password
+                    default_hash = hash_password("password123")
+                    cur.execute("INSERT INTO chatbot_users (phone, password_hash, role) VALUES (%s, %s, 'owner')", (phone, default_hash))
+                    user_id = cur.lastrowid
+                    role = "owner"
+                    conn.commit()
+                else:
+                    user_id, role = row
             
             token = generate_jwt_token({"id": user_id, "email": None, "phone": phone, "role": role})
-            log_audit_action(user_id, "LOGIN_OTP_PHONE", "users", user_id, "system")
+            log_audit_action(user_id, "LOGIN_OTP_PHONE", "chatbot_users", user_id, "system")
             
             return {
                 "success": True, 
@@ -786,24 +709,23 @@ def verify_otp_email(req: dict):
         from business_by_phone import get_businesses_by_email
         from auth_utils import generate_jwt_token
         try:
-            # Ensure user exists in users table first
-            conn = sqlite3.connect(DATABASE_URL)
-            cur = conn.cursor()
-            cur.execute("SELECT id, role FROM users WHERE email = ?", (email,))
-            row = cur.fetchone()
-            if not row:
-                from auth_utils import hash_password
-                default_hash = hash_password("password123")
-                cur.execute("INSERT INTO users (email, password_hash, role) VALUES (?, ?, 'owner')", (email, default_hash))
-                user_id = cur.lastrowid
-                role = "owner"
-                conn.commit()
-            else:
-                user_id, role = row
-            conn.close()
+            # Ensure user exists in chatbot_users table first
+            with mysql_ctx() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT id, role FROM chatbot_users WHERE email = %s", (email,))
+                row = cur.fetchone()
+                if not row:
+                    from auth_utils import hash_password
+                    default_hash = hash_password("password123")
+                    cur.execute("INSERT INTO chatbot_users (email, password_hash, role) VALUES (%s, %s, 'owner')", (email, default_hash))
+                    user_id = cur.lastrowid
+                    role = "owner"
+                    conn.commit()
+                else:
+                    user_id, role = row
             
             token = generate_jwt_token({"id": user_id, "email": email, "phone": None, "role": role})
-            log_audit_action(user_id, "LOGIN_OTP_EMAIL", "users", user_id, "system")
+            log_audit_action(user_id, "LOGIN_OTP_EMAIL", "chatbot_users", user_id, "system")
             
             # Retrieve existing businesses if any
             businesses = []
@@ -884,31 +806,30 @@ def login_legacy(req: LoginRequest):
         else:
             raise HTTPException(400, "Missing identifier")
             
-        # Get or create user in users table
-        conn = sqlite3.connect(DATABASE_URL)
-        cur = conn.cursor()
-        if req.phone:
-            cur.execute("SELECT id, role FROM users WHERE phone = ?", (identifier,))
-        else:
-            cur.execute("SELECT id, role FROM users WHERE email = ?", (identifier,))
-        row = cur.fetchone()
-        
-        if not row:
-            from auth_utils import hash_password
-            default_hash = hash_password("password123")
+        # Get or create user in chatbot_users table
+        with mysql_ctx() as conn:
+            cur = conn.cursor()
             if req.phone:
-                cur.execute("INSERT INTO users (phone, password_hash, role) VALUES (?, ?, 'owner')", (identifier, default_hash))
+                cur.execute("SELECT id, role FROM chatbot_users WHERE phone = %s", (identifier,))
             else:
-                cur.execute("INSERT INTO users (email, password_hash, role) VALUES (?, ?, 'owner')", (identifier, default_hash))
-            user_id = cur.lastrowid
-            role = "owner"
-            conn.commit()
-        else:
-            user_id, role = row
-        conn.close()
+                cur.execute("SELECT id, role FROM chatbot_users WHERE email = %s", (identifier,))
+            row = cur.fetchone()
+            
+            if not row:
+                from auth_utils import hash_password
+                default_hash = hash_password("password123")
+                if req.phone:
+                    cur.execute("INSERT INTO chatbot_users (phone, password_hash, role) VALUES (%s, %s, 'owner')", (identifier, default_hash))
+                else:
+                    cur.execute("INSERT INTO chatbot_users (email, password_hash, role) VALUES (%s, %s, 'owner')", (identifier, default_hash))
+                user_id = cur.lastrowid
+                role = "owner"
+                conn.commit()
+            else:
+                user_id, role = row
         
         token = generate_jwt_token({"id": user_id, "email": identifier if req.email else None, "phone": identifier if req.phone else None, "role": role})
-        log_audit_action(user_id, "LOGIN_LEGACY", "users", user_id, "system")
+        log_audit_action(user_id, "LOGIN_LEGACY", "chatbot_users", user_id, "system")
         
         return {
             "success": True, 
@@ -991,25 +912,32 @@ def extract_search_params(query_str: str):
     return found_category, found_city, found_area
 
 def _get_last_search_metadata(session_id: str):
-    """Retrieves the search_metadata dictionary from the last assistant database response in this session."""
+    """
+    Retrieves the search_metadata from the last relevant assistant message.
+    Checks BOTH 'database' and 'flow_step' type messages so the guided
+    conversation flow persists correctly across turns.
+    """
     if not session_id:
         return None
     try:
-        conn = sqlite3.connect(DATABASE_URL)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT content FROM chat_messages WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 10",
-            (session_id,)
-        )
-        rows = cur.fetchall()
-        conn.close()
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT content FROM chatbot_chat_messages WHERE session_id = %s AND role = 'assistant' ORDER BY id DESC LIMIT 15",
+                (session_id,)
+            )
+            rows = cur.fetchall()
         for r in rows:
             content = r["content"]
             try:
                 data = json.loads(content)
-                if isinstance(data, dict) and data.get("type") == "database" and "search_metadata" in data:
-                    return data["search_metadata"]
+                if not isinstance(data, dict):
+                    continue
+                msg_type = data.get("type", "")
+                meta = data.get("search_metadata")
+                # Accept metadata from database results AND guided flow steps
+                if meta and msg_type in ("database", "database_products", "flow_step", "faq"):
+                    return meta
             except Exception:
                 continue
     except Exception as e:
@@ -1192,7 +1120,7 @@ def query_local_businesses(category: str, city: str, offset: int = 0, limit: int
             rows.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
         else:
             rows.sort(key=lambda x: x.get("search_score", 0.0), reverse=True)
-            
+
         return rows[offset:offset+limit]
 
 def count_local_businesses(category: str, city: str, area: str = None, min_rating: float = None, filters: dict = None):
@@ -1233,7 +1161,7 @@ def count_local_businesses(category: str, city: str, area: str = None, min_ratin
             if filters.get("family"):
                 conditions.append("(LOWER(description) LIKE %s OR LOWER(business_subcategory) LIKE %s)")
                 params.extend(["%family%", "%kids%"])
-                
+
         where_clause = " AND ".join(conditions)
         if where_clause:
             query_sql = f"SELECT COUNT(*) FROM master_table WHERE {where_clause}"
@@ -1244,70 +1172,466 @@ def count_local_businesses(category: str, city: str, area: str = None, min_ratin
         return count
 
 
-async def rewrite_query_with_context(user_query: str, last_metadata: dict) -> Optional[dict]:
-    """Uses the LLM to rewrite a query based on previous search context."""
+# ---------------------------------------------------------------------------
+# Multi-source listing query — queries ALL listing tables and normalizes results
+# ---------------------------------------------------------------------------
+# Schema for each source table: maps source columns → unified field names
+LISTING_SOURCE_SCHEMAS = {
+    "justdial": {
+        "table": "justdial",
+        "name": "company",
+        "phone": "number1",
+        "phone2": "number2",
+        "email": "email",
+        "address": "address",
+        "area": "area",
+        "city": "city",
+        "category": "category",
+        "subcategory": None,
+        "rating": "rating",
+        "reviews": "reviews",
+        "website": "website",
+        "latitude": "latitude",
+        "longitude": "longitude",
+        "source_label": "JustDial",
+    },
+    "google_map": {
+        "table": "google_map",
+        "name": "business_name",
+        "phone": "number",
+        "phone2": None,
+        "email": "email",
+        "address": "address",
+        "area": None,
+        "city": None,
+        "category": "category",
+        "subcategory": None,
+        "rating": "rating",
+        "reviews": "review",
+        "website": "website",
+        "latitude": "latitude",
+        "longitude": "longitude",
+        "source_label": "Google Maps",
+    },
+    "heyplaces": {
+        "table": "heyplaces",
+        "name": "name",
+        "phone": "number",
+        "phone2": None,
+        "email": None,
+        "address": "address",
+        "area": None,
+        "city": "city",
+        "category": "category",
+        "subcategory": None,
+        "rating": None,
+        "reviews": None,
+        "website": "website",
+        "latitude": None,
+        "longitude": None,
+        "source_label": "HeyPlaces",
+    },
+    "magicpin": {
+        "table": "magicpin",
+        "name": "name",
+        "phone": "number",
+        "phone2": None,
+        "email": None,
+        "address": "address",
+        "area": "area",
+        "city": "city",
+        "category": "category",
+        "subcategory": "subcategory",
+        "rating": "rating",
+        "reviews": None,
+        "website": None,
+        "latitude": "latitude",
+        "longitude": "longitude",
+        "source_label": "MagicPin",
+    },
+    "nearbuy": {
+        "table": "nearbuy",
+        "name": "name",
+        "phone": "number",
+        "phone2": None,
+        "email": None,
+        "address": "address",
+        "area": None,
+        "city": "city",
+        "category": None,
+        "subcategory": None,
+        "rating": "rating",
+        "reviews": None,
+        "website": None,
+        "latitude": "latitude",
+        "longitude": "longitude",
+        "source_label": "NearBuy",
+    },
+    "asklaila": {
+        "table": "asklaila",
+        "name": "name",
+        "phone": "number1",
+        "phone2": "number2",
+        "email": "email",
+        "address": "address",
+        "area": "area",
+        "city": "city",
+        "category": "category",
+        "subcategory": "subcategory",
+        "rating": "ratings",
+        "reviews": None,
+        "website": "url",
+        "latitude": None,
+        "longitude": None,
+        "source_label": "AskLaila",
+    },
+    "yellow_pages": {
+        "table": "yellow_pages",
+        "name": "name",
+        "phone": "number",
+        "phone2": None,
+        "email": "email",
+        "address": "address",
+        "area": "area",
+        "city": "city",
+        "category": "category",
+        "subcategory": None,
+        "rating": None,
+        "reviews": None,
+        "website": None,
+        "latitude": None,
+        "longitude": None,
+        "source_label": "Yellow Pages",
+    },
+    "freelisting": {
+        "table": "freelisting",
+        "name": "name",
+        "phone": "number",
+        "phone2": None,
+        "email": None,
+        "address": "address",
+        "area": None,
+        "city": None,
+        "category": "category",
+        "subcategory": "subcategory",
+        "rating": None,
+        "reviews": None,
+        "website": "url",
+        "latitude": None,
+        "longitude": None,
+        "source_label": "Free Listing",
+    },
+    "businesses": {
+        "table": "businesses",
+        "name": "name",
+        "phone": "phone_number",
+        "phone2": None,
+        "email": None,
+        "address": "address",
+        "area": "area",
+        "city": "city",
+        "category": "category",
+        "subcategory": "subcategory",
+        "rating": "reviews_average",
+        "reviews": "reviews_count",
+        "website": "website",
+        "latitude": None,
+        "longitude": None,
+        "source_label": "Businesses",
+    },
+    "g_map_master_table": {
+        "table": "g_map_master_table",
+        "name": "name",
+        "phone": "phone_number",
+        "phone2": None,
+        "email": None,
+        "address": "address",
+        "area": "area",
+        "city": "city",
+        "category": "category",
+        "subcategory": "subcategory",
+        "rating": "reviews_avg",
+        "reviews": "reviews_count",
+        "website": "website",
+        "latitude": None,
+        "longitude": None,
+        "source_label": "Google Maps Master",
+    },
+}
+
+
+def query_all_listing_sources(
+    category: str = None,
+    city: str = None,
+    area: str = None,
+    source_filter: str = None,
+    limit: int = 10,
+    offset: int = 0,
+    ranking_intent: str = None,
+) -> list:
+    """
+    Query all listing source tables and return normalized results.
+    Each result has a 'source' badge so the UI can show which platform it's from.
+    
+    If source_filter is specified (e.g. 'justdial'), only that source is queried.
+    Otherwise all sources are combined and de-duplicated.
+    """
+    sources_to_query = (
+        [source_filter] if source_filter and source_filter in LISTING_SOURCE_SCHEMAS
+        else list(LISTING_SOURCE_SCHEMAS.keys())
+    )
+
+    all_results = []
+    per_source_limit = max(limit * 2, 20)  # fetch more to allow de-dup and proper ranking
+
+    with mysql_ctx() as conn:
+        cur = conn.cursor(dictionary=True)
+
+        for src_key in sources_to_query:
+            schema = LISTING_SOURCE_SCHEMAS[src_key]
+            table = schema["table"]
+
+            conditions = []
+            params = []
+
+            # Category filter
+            cat_col = schema["category"]
+            subcat_col = schema["subcategory"]
+            name_col = schema["name"]
+
+            if category:
+                cat_lower = category.lower()
+                cat_parts = []
+                if cat_col:
+                    cat_parts.append(f"LOWER({cat_col}) LIKE %s")
+                    params.append(f"%{cat_lower}%")
+                if subcat_col:
+                    cat_parts.append(f"LOWER({subcat_col}) LIKE %s")
+                    params.append(f"%{cat_lower}%")
+                if name_col:
+                    cat_parts.append(f"LOWER({name_col}) LIKE %s")
+                    params.append(f"%{cat_lower}%")
+                if cat_parts:
+                    conditions.append("(" + " OR ".join(cat_parts) + ")")
+
+            # City filter
+            city_col = schema["city"]
+            if city and city.lower() != "india" and city_col:
+                conditions.append(f"LOWER({city_col}) LIKE %s")
+                params.append(f"%{city.lower()}%")
+
+            # Area filter
+            area_col = schema["area"]
+            if area and area_col:
+                conditions.append(f"LOWER({area_col}) LIKE %s")
+                params.append(f"%{area.lower()}%")
+
+            where_str = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+            # Ordering
+            order_col = schema["rating"]
+            if ranking_intent == "highest_rated" and order_col:
+                order_str = f"ORDER BY {order_col} DESC"
+            elif ranking_intent == "most_reviewed" and schema["reviews"]:
+                order_str = f"ORDER BY {schema['reviews']} DESC"
+            else:
+                order_str = f"ORDER BY {order_col} DESC" if order_col else ""
+
+            try:
+                cur.execute(
+                    f"SELECT * FROM {table} {where_str} {order_str} LIMIT %s",
+                    params + [per_source_limit]
+                )
+                rows = cur.fetchall()
+
+                # Normalize to unified schema
+                for row in rows:
+                    normalized = {
+                        "global_business_id": f"{src_key}_{row.get('id')}",
+                        "business_name": row.get(schema["name"]) or "",
+                        "business_category": (row.get(cat_col) if cat_col else None) or (row.get(subcat_col) if subcat_col else None) or "",
+                        "business_subcategory": row.get(subcat_col) if subcat_col else "",
+                        "phone_number": row.get(schema["phone"]) or "",
+                        "email": row.get(schema["email"]) if schema["email"] else "",
+                        "address": row.get(schema["address"]) or "",
+                        "area": row.get(schema["area"]) if schema["area"] else "",
+                        "city": row.get(schema["city"]) if schema["city"] else city or "",
+                        "state": row.get("state") if "state" in row else "",
+                        "ratings": float(row.get(schema["rating"]) or 0) if schema["rating"] else 0.0,
+                        "reviews_count": int(row.get(schema["reviews"]) or 0) if schema["reviews"] else 0,
+                        "website_url": row.get(schema["website"]) if schema["website"] else "",
+                        "latitude": float(row.get(schema["latitude"]) or 0) if schema["latitude"] else 0.0,
+                        "longitude": float(row.get(schema["longitude"]) or 0) if schema["longitude"] else 0.0,
+                        "source": schema["source_label"],
+                        "verified_status": "unverified",
+                        "confidence_score": 0.8,
+                        "image_url": "",
+                        "google_maps_link": "",
+                        "opening_hours": "",
+                        "business_description": "",
+                    }
+                    if normalized["business_name"]:
+                        all_results.append(normalized)
+            except Exception as src_err:
+                print(f"[LISTING SOURCE] Error querying {table}: {src_err}")
+                continue
+
+    # De-duplicate by name+city hash (remove exact duplicates across sources)
+    seen_hashes = set()
+    unique_results = []
+    for r in all_results:
+        key = (r["business_name"].lower().strip(), r["city"].lower().strip())
+        if key not in seen_hashes:
+            seen_hashes.add(key)
+            unique_results.append(r)
+
+    # Sort combined results
+    if ranking_intent == "highest_rated":
+        unique_results.sort(key=lambda x: x["ratings"], reverse=True)
+    elif ranking_intent == "most_reviewed":
+        unique_results.sort(key=lambda x: x["reviews_count"], reverse=True)
+    else:
+        # Default: highest rated first
+        unique_results.sort(key=lambda x: x["ratings"], reverse=True)
+
+    return unique_results[offset : offset + limit]
+
+
+
+
+def rewrite_query_with_context(user_query: str, last_metadata: dict) -> Optional[dict]:
+    """
+    Rule-based context rewriter (LLM removed).
+    Detects follow-up patterns (pagination, area/rating filters, ranking adjustments)
+    and merges them with the last search context. Returns None for brand-new searches.
+    """
     if not last_metadata:
         return None
-        
-    prompt = f"""
-    The user is searching for local businesses on our platform.
-    Previous Search Context:
-    - Category: {last_metadata.get('category')}
-    - City: {last_metadata.get('city')}
-    - Area: {last_metadata.get('area')}
-    - Minimum Rating: {last_metadata.get('min_rating')}
-    - Current Page Offset: {last_metadata.get('offset', 0)}
-    
-    New User Input: "{user_query}"
-    
-    Task:
-    Determine if the new input is a follow-up question, filter adjustment, page navigation, or location refinement of the previous search.
-    Examples of follow-ups:
-    - "show more" or "next" -> offset should increase by 10
-    - "only near Navrangpura" -> area should be "Navrangpura", offset reset to 0
-    - "above 4.5 rating" or "4.5+ stars" -> min_rating should be 4.5, offset reset to 0
-    - "any in Kothrud?" -> area should be "Kothrud", offset reset to 0
-    - "previous page" or "go back" -> offset should decrease by 10 (min 0)
-    
-    If the new input is a follow-up, return a JSON object with the updated search parameters.
-    If the user has cleared a filter (e.g. "any rating" or "all areas"), set that field to null.
-    
-    Allowed JSON fields in the returned object:
-    - category (string)
-    - city (string)
-    - area (string or null)
-    - min_rating (float or null)
-    - offset (integer)
-    
-    If the input is a COMPLETELY NEW search (e.g. user previously searched for gyms and now wants pizza) or a general conversational question, return ONLY the word: null
-    
-    Respond ONLY with the JSON object or the word "null", without markdown blocks.
-    """
-    
-    try:
-        from llm_client import call_llm
-        response = await anyio.to_thread.run_sync(
-            call_llm, 
-            [{"role": "user", "content": prompt}], 
-            "google/gemini-2.5-flash-lite", 
-            2, 
-            150
-        )
-        content = response.get("content", "").strip()
-        if content.startswith("```"):
-            content = content.replace("```json", "").replace("```", "").strip()
-        if content.lower() == "null" or not content:
-            return None
-        
-        updated = json.loads(content)
-        if isinstance(updated, dict):
+
+    q = user_query.lower().strip()
+
+    # If query has new category or city — treat as new search
+    has_new_cat = False
+    for cat in CATEGORIES_CACHE:
+        if not cat or len(cat) < 4:
+            continue
+        if cat.lower() in q:
+            # If it's the same category as before, it's not a "new" category
+            last_cat = last_metadata.get("category")
+            if last_cat and last_cat.lower() == cat.lower():
+                continue
+            has_new_cat = True
+            break
+
+    has_new_city = False
+    for c in CITIES_CACHE:
+        if not c or len(c) < 4:
+            continue
+        if c.lower() in q:
+            last_city = last_metadata.get("city")
+            if last_city and last_city.lower() == c.lower():
+                continue
+            has_new_city = True
+            break
+
+    if has_new_cat or has_new_city:
+        return None
+
+    # Detect pagination commands
+    next_triggers = [
+        "next", "more", "show more", "next results", "show next",
+        "next 10", "next 5", "next page", "next option",
+        "show next 10 results", "show next 5 results",
+    ]
+    prev_triggers = [
+        "prev", "previous", "go back", "previous results",
+        "previous page", "show previous",
+    ]
+
+    if any(t in q for t in next_triggers):
+        limit_val = last_metadata.get("limit", 10)
+        merged = last_metadata.copy()
+        merged["offset"] = last_metadata.get("offset", 0) + limit_val
+        print(f"[REWRITER] Next page detected -> offset={merged['offset']}")
+        return merged
+
+    if any(t in q for t in prev_triggers):
+        limit_val = last_metadata.get("limit", 10)
+        merged = last_metadata.copy()
+        merged["offset"] = max(0, last_metadata.get("offset", 0) - limit_val)
+        print(f"[REWRITER] Prev page detected -> offset={merged['offset']}")
+        return merged
+
+    # Detect rating filter adjustments: e.g. "rating: 4.0", "4.0 stars", "4+"
+    rating_match = re.search(r'(?:rating|rated|star|stars)\s*(?::)?\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:\+|plus|star|stars|rating|rated)', q)
+    if rating_match:
+        try:
+            val = rating_match.group(1) or rating_match.group(2)
+            min_r = float(val)
+            if 0 < min_r <= 5:
+                merged = last_metadata.copy()
+                merged["min_rating"] = min_r
+                merged["offset"] = 0
+                print(f"[REWRITER] Rating filter -> min_rating={min_r}")
+                return merged
+        except ValueError:
+            pass
+
+    # Detect area refinement
+    area_match = re.search(r'(?:near|in|at|around)\s+([a-z][a-z\s]{2,25}?)(?:\s*$|\?)', q)
+    if area_match:
+        area_candidate = area_match.group(1).strip()
+        known_area = None
+        for a in sorted(AREAS_CACHE, key=len, reverse=True):
+            if a and (a.lower() in area_candidate or area_candidate in a.lower()):
+                known_area = a
+                break
+        if known_area:
             merged = last_metadata.copy()
-            for k in ["category", "city", "area", "min_rating", "offset"]:
-                if k in updated:
-                    merged[k] = updated[k]
+            merged["area"] = known_area
+            merged["offset"] = 0
+            print(f"[REWRITER] Area refined -> area={known_area}")
             return merged
-    except Exception as e:
-        print(f"[REWRITER] Context rewrite error: {e}")
+
+    # Detect open-now filter
+    if any(w in q for w in ["open now", "open today", "currently open", "only open"]):
+        merged = last_metadata.copy()
+        merged["open_only"] = True
+        merged["offset"] = 0
+        print("[REWRITER] Open-now filter applied")
+        return merged
+
+    # Detect top-rated ranking
+    if any(w in q for w in ["top rated", "highest rated", "best rated"]):
+        if last_metadata.get("category") or last_metadata.get("city"):
+            merged = last_metadata.copy()
+            merged["ranking"] = "highest_rated"
+            merged["offset"] = 0
+            return merged
+
+    # Detect most-reviewed ranking
+    if any(w in q for w in ["most reviewed", "popular", "most popular"]):
+        if last_metadata.get("category") or last_metadata.get("city"):
+            merged = last_metadata.copy()
+            merged["ranking"] = "most_reviewed"
+            merged["offset"] = 0
+            return merged
+
+    # Detect budget filter
+    if any(w in q for w in ["budget", "cheap", "affordable"]):
+        merged = last_metadata.copy()
+        merged["ranking"] = "budget"
+        merged["offset"] = 0
+        return merged
+
+    # Detect luxury filter
+    if any(w in q for w in ["luxury", "premium", "5 star", "five star"]):
+        merged = last_metadata.copy()
+        merged["ranking"] = "luxury"
+        merged["offset"] = 0
+        return merged
+
+    # No clear follow-up signal — treat as new search
     return None
 
 def generate_category_suggestions(category: str, city: str) -> list:
@@ -1422,724 +1746,333 @@ class SearchCache:
 search_cache = SearchCache()
 
 async def compare_businesses_ai(biz1: dict, biz2: dict, lang: str):
-    prompt = f"""
-Compare the following two local businesses side-by-side:
-Business 1: {json.dumps(biz1, indent=2)}
-Business 2: {json.dumps(biz2, indent=2)}
-
-Your Task:
-Provide a clear side-by-side comparison summary. Contrast their rating, review counts, subcategory/services, hours, and addresses.
-Give a direct recommendation on which one to choose based on customer ratings and details.
-Translate the comparison and recommendation into language code '{lang}'.
-Return only the comparison text in standard markdown.
-"""
+    name1 = biz1.get("business_name") or "Business 1"
+    name2 = biz2.get("business_name") or "Business 2"
+    
+    rating1 = biz1.get("rating") or biz1.get("stars") or "N/A"
+    rating2 = biz2.get("rating") or biz2.get("stars") or "N/A"
+    
+    reviews1 = biz1.get("review_count") or biz1.get("reviews") or 0
+    reviews2 = biz2.get("review_count") or biz2.get("reviews") or 0
+    
+    cat1 = biz1.get("business_category") or "N/A"
+    cat2 = biz2.get("business_category") or "N/A"
+    
+    city1 = biz1.get("city") or "N/A"
+    city2 = biz2.get("city") or "N/A"
+    
+    addr1 = biz1.get("address") or "N/A"
+    addr2 = biz2.get("address") or "N/A"
+    
+    phone1 = biz1.get("phone_number") or "N/A"
+    phone2 = biz2.get("phone_number") or "N/A"
+    
+    hours1 = biz1.get("working_hour") or biz1.get("opening_hours") or "N/A"
+    hours2 = biz2.get("working_hour") or biz2.get("opening_hours") or "N/A"
+    
+    # Recommendation logic
+    rec = ""
     try:
-        from llm_client import call_llm
-        res = await anyio.to_thread.run_sync(
-            call_llm, 
-            [{"role": "user", "content": prompt}], 
-            "google/gemini-2.5-flash", 
-            2, 
-            1500
-        )
-        return res.get("content", "").strip()
-    except Exception as e:
-        return f"Comparison summary for {biz1.get('business_name')} and {biz2.get('business_name')}."
+        r1 = float(rating1)
+        r2 = float(rating2)
+        if r1 > r2:
+            rec = f"🏆 **Recommendation**: We recommend **{name1}** as it has a higher rating of {r1} compared to {r2}."
+        elif r2 > r1:
+            rec = f"🏆 **Recommendation**: We recommend **{name2}** as it has a higher rating of {r2} compared to {r1}."
+        else:
+            v1 = int(reviews1)
+            v2 = int(reviews2)
+            if v1 > v2:
+                rec = f"🏆 **Recommendation**: Both have the same rating, but we recommend **{name1}** as it has more reviews ({v1} vs {v2})."
+            elif v2 > v1:
+                rec = f"🏆 **Recommendation**: Both have the same rating, but we recommend **{name2}** as it has more reviews ({v2} vs {v1})."
+            else:
+                rec = f"🏆 **Recommendation**: Both are excellent choices with matching ratings and reviews!"
+    except:
+        rec = f"🏆 **Recommendation**: Compare their locations and contact details below to make your choice."
+
+    comparison_md = f"""
+### 📊 Side-by-Side Comparison
+
+| Feature | {name1} | {name2} |
+| :--- | :--- | :--- |
+| **Category** | {cat1} | {cat2} |
+| **Rating** | ⭐ {rating1} | ⭐ {rating2} |
+| **Reviews Count** | 💬 {reviews1} | 💬 {reviews2} |
+| **City** | 📍 {city1} | 📍 {city2} |
+| **Address** | 🏠 {addr1} | 🏠 {addr2} |
+| **Phone** | 📞 {phone1} | 📞 {phone2} |
+| **Hours** | ⏰ {hours1} | ⏰ {hours2} |
+
+---
+
+{rec}
+"""
+    return comparison_md.strip()
+
+
+# ---------------------------------------------------------------------------
+# Smart suggestions endpoint (used by frontend autocomplete)
+# ---------------------------------------------------------------------------
+class SmartSuggestionsRequest(BaseModel):
+    text: str
+    language: Optional[str] = "en"
+    flow: Optional[str] = "QUERY"
+
+@app.post("/api/smart-suggestions")
+def smart_suggestions(req: SmartSuggestionsRequest):
+    """
+    Returns autocomplete-style suggestions based on the user's current input.
+    Queries city/category/area caches to build relevant suggestions.
+    """
+    text = (req.text or "").lower().strip()
+    if len(text) < 2:
+        return {"suggestions": []}
+
+    suggestions = []
+
+    # 1. Category matches
+    for cat in CATEGORIES_CACHE:
+        if cat and text in cat.lower() and cat not in suggestions:
+            suggestions.append(cat.capitalize() + " near me")
+            if len(suggestions) >= 4:
+                break
+
+    # 2. City matches
+    city_matches = [c for c in CITIES_CACHE if c and text in c.lower()][:3]
+    for city in city_matches:
+        if city:
+            cat_hint = "Restaurants" if "restaurant" in text else "Businesses"
+            suggestions.append(f"{cat_hint} in {city.title()}")
+
+    # 3. Common action patterns
+    action_patterns = [
+        ("restaurant", ["Best restaurants near me", "Top rated restaurants", "Veg restaurants"]),
+        ("hotel", ["Budget hotels", "Luxury hotels", "Hotels with parking"]),
+        ("gym", ["24x7 gyms", "Women's gyms", "Gyms near me"]),
+        ("hospital", ["Top hospitals", "Emergency hospitals", "Multi-speciality hospitals"]),
+        ("salon", ["Best salons", "Budget salons", "Unisex salons"]),
+        ("amazon", ["Amazon products", "Amazon best sellers", "Amazon deals"]),
+        ("blinkit", ["Blinkit grocery products", "Blinkit top items"]),
+        ("zepto", ["Zepto products", "Zepto grocery deals"]),
+        ("flipkart", ["Flipkart products", "Flipkart best sellers"]),
+    ]
+    for keyword, actions in action_patterns:
+        if keyword in text:
+            for a in actions:
+                if a not in suggestions:
+                    suggestions.append(a)
+            break
+
+    # Deduplicate and limit
+    seen = set()
+    unique = []
+    for s in suggestions:
+        if s.lower() not in seen:
+            seen.add(s.lower())
+            unique.append(s)
+
+    return {"suggestions": unique[:6]}
+
+
+# ---------------------------------------------------------------------------
+# Health endpoint
+# ---------------------------------------------------------------------------
+@app.get("/api/health")
+def health_check():
+    """Health check endpoint for the frontend status indicator."""
+    try:
+        with mysql_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        mysql_status = "connected"
+    except Exception:
+        mysql_status = "disconnected"
+
+    return {
+        "status": "ok",
+        "mysql": mysql_status,
+        "version": "1.0.0",
+    }
+
 
 @app.post("/api/query")
 async def search(req: SearchRequest):
     try:
-        from assistant_manager import (
-            parse_query_nlu, 
-            generate_conversational_summary_and_chips, 
-            get_ai_conversational_response,
-            get_guidance,
-            is_greeting,
-            get_greeting_response
-        )
+        from chat_router import handle_chat_query
         
-        # --- PROMPT INJECTION CHECK ---
-        if check_prompt_injection(req.query):
-            resp = {"type": "faq", "data": "Safety check failed. Please submit a valid query."}
-            if req.session_id:
-                _save_chat_message(req.session_id, "assistant", json.dumps(resp))
-            return resp
-            
-        q_lower = req.query.lower().strip()
         session_phone = req.session.get("phone") if req.session else None
         session_email = req.session.get("email") if req.session else None
         lang = req.language or "en"
         chat_session_id = req.session_id
-
-        # --- Normalised Query Cache Check ---
-        cached_val = search_cache.get(req.query, lang)
-        if cached_val:
-            print(f"[CACHE] Hit cache for query '{req.query}'")
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "user", req.query)
-                _save_chat_message(chat_session_id, "assistant", json.dumps(cached_val))
-            return cached_val
-
-        # --- Save User Message to History ---
-        if chat_session_id:
-            _save_chat_message(chat_session_id, "user", req.query)
-            _update_session_title(chat_session_id, req.query)
-            chat_history = _get_recent_history(chat_session_id, limit=10)
-        else:
-            chat_history = []
-
-        # --- RIGID CHATBOT FLOW INTERCEPTS (Direct MySQL Queries) ---
-        if q_lower in ["explore listings", "top rated businesses"]:
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                # Fetch Top Rated Businesses from master_table
-                cur.execute("SELECT * FROM master_table ORDER BY reviews_avg DESC LIMIT 5")
-                biz_results = cur.fetchall()
-                # Fetch categories for chips
-                cur.execute("SELECT category_name FROM Top_categories_rank ORDER BY category_rank ASC LIMIT 10")
-                cats = [row["category_name"] for row in cur.fetchall()]
-            
-            resp = {
-                "type": "database",
-                "data": map_business_fields(biz_results),
-                "intro": "Here are some of our top rated businesses:",
-                "suggestions": [{"title": c, "action": "query_rewrite", "query": c} for c in cats] + [{"title": "📍 Browse Locations", "action": "query_rewrite", "query": "Browse Locations"}]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        if q_lower in ["browse products", "trending products"]:
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                cur.execute("SELECT * FROM product_master WHERE stars IS NOT NULL ORDER BY stars DESC LIMIT 5")
-                prod_results = cur.fetchall()
-                cur.execute("SELECT DISTINCT category_name FROM product_master WHERE category_name IS NOT NULL LIMIT 8")
-                cats = [row["category_name"] for row in cur.fetchall()]
-            
-            resp = {
-                "type": "database_products",
-                "data": map_product_fields(prod_results),
-                "intro": "Here are some trending products available right now:",
-                "suggestions": [{"title": c, "action": "query_rewrite", "query": c} for c in cats]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        if q_lower == "browse categories":
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                cur.execute("SELECT category_name FROM Top_categories_rank ORDER BY category_rank ASC LIMIT 15")
-                cats = [row["category_name"] for row in cur.fetchall()]
-            
-            resp = {
-                "type": "faq",
-                "data": "We have businesses across many categories! Here are some of the most popular ones:",
-                "suggestions": [{"title": c, "action": "query_rewrite", "query": c} for c in cats]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        if q_lower in ["browse locations", "top cities", "top cities 📍"]:
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                cur.execute("SELECT city_name FROM Top_cities_rank ORDER BY city_rank ASC LIMIT 15")
-                cities = [row["city_name"] for row in cur.fetchall()]
-            
-            resp = {
-                "type": "faq",
-                "data": "We have listings across all major cities! Select a city below to explore:",
-                "suggestions": [{"title": c, "action": "query_rewrite", "query": c} for c in cities]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        # --- NLU Classification & Multi-turn Resolution ---
-        nlu = await anyio.to_thread.run_sync(parse_query_nlu, req.query, lang, chat_history)
-        intents = nlu.get("intents", ["Unknown"])
-        primary_intent = intents[0] if intents else "Unknown"
-        entities = nlu.get("entities", {})
-        
-        # Determine if we should force business search intent
-        business_search_keywords = [
-            "restaurant", "hotel", "hospital", "gym", "salon", "school", "cafe", "shop", 
-            "doctor", "clinic", "food", "dining", "spa", "boutique", "fitness", "dentist",
-            "bakery", "service", "lawyer", "advocate", "mechanic", "plumber"
-        ]
-        ranking_keywords = [
-            "best", "top", "highest rated", "highest-rated", "top 5", "top 10", 
-            "most reviewed", "most-reviewed", "reviews", "popular"
-        ]
-        
-        has_biz_keyword = any(k in q_lower for k in business_search_keywords)
-        has_rank_keyword = any(k in q_lower for k in ranking_keywords)
-        has_cache_cat = any(cat.lower() in q_lower for cat in CATEGORIES_CACHE)
-        
-        is_forced_search = has_biz_keyword or has_rank_keyword or has_cache_cat
-        
-        if is_forced_search:
-            primary_intent = "Business Search"
-            print(f"[OVERRIDE] Forced intent to Business Search due to keywords/categories.")
-            
-        print(f"[NLU] Intent: {primary_intent}, Entities: {entities}")
-
-        # --- Intent: Greeting, Help, or General Conversation ---
-        if primary_intent in ["Greeting", "Help", "General AI Question"] or is_greeting(req.query):
-            ai_resp = await anyio.to_thread.run_sync(get_ai_conversational_response, req.query, lang, chat_history)
-            resp = {
-                "type": "faq",
-                "data": ai_resp.get("response", ""),
-                "suggestions": [{"title": s, "action": "query_rewrite", "query": s} for s in ai_resp.get("suggestions", [])]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
-
-        # --- Intent: Business Addition Save Confirmation ---
-        if primary_intent == "Business Addition" or q_lower in ["save this business", "yes save it", "yes, save it! 📥"]:
-            resp = {
-                "type": "faq",
-                "data": "I am a strictly Read-Only AI Business Assistant and cannot add or modify businesses in the database.",
-                "suggestions": [{"title": "Search Restaurants 🍕", "action": "query_rewrite", "query": "Restaurants"}]
-            }
-            if chat_session_id:
-                _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-            return resp
+        resp = await handle_chat_query(req, session_phone, session_email, lang)
 
         # --- Mandatory Auth Check for MY BUSINESS actions ---
-        is_my_biz_query = any(x in q_lower for x in [
-            "show my business", "show business", "my business",
-            "update my business", "update business",
-            "manage product", "manage products",
-            "manage deal", "manage deals"
-        ])
-        if is_my_biz_query:
-            if not session_phone and not session_email:
-                resp = {"type": "faq", "data": "Please login with your mobile number or email to manage your business profile. Click 'Login' at the top!"}
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
+        # is_my_biz_query = any(x in q_lower for x in [
+        #     "show my business", "show business", "my business",
+        #     "update my business", "update business",
+        #     "manage product", "manage products",
+        #     "manage deal", "manage deals"
+        # ])
 
-            from business_by_phone import get_businesses_by_phone, get_businesses_by_email
-            try:
-                raw_matches = get_businesses_by_phone(session_phone) if session_phone else get_businesses_by_email(session_email)
-                if not raw_matches:
-                    resp = {"type": "faq", "data": "I couldn't find a business registered with your credentials."}
-                    if chat_session_id:
-                        _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                    return resp
-                
-                mapped = map_business_fields(raw_matches)
-                biz_row = raw_matches[0]
+        # if is_my_biz_query:
+        #     if not session_phone and not session_email:
+        #         resp = {"type": "faq", "data": "Please login with your mobile number or email to manage your business profile. Click 'Login' at the top!"}
+        #         if chat_session_id:
+        #             _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+        #         return resp
 
-                results = map_business_fields([biz_row])
+        #     from business_by_phone import get_businesses_by_phone, get_businesses_by_email
+        #     try:
+        #         raw_matches = get_businesses_by_phone(session_phone) if session_phone else get_businesses_by_email(session_email)
+        #         if not raw_matches:
+        #             resp = {"type": "faq", "data": "I couldn't find a business registered with your credentials."}
+        #             if chat_session_id:
+        #                 _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+        #             return resp
                 
-                if "manage product" in q_lower or "show product" in q_lower:
-                    with db_context() as conn:
-                        cur = conn.cursor()
-                        selected_business_id = req.business_id
-                        if not selected_business_id:
-                            raise HTTPException(400, "No business selected.")
+        #         mapped = map_business_fields(raw_matches)
+        #         biz_row = raw_matches[0]
+
+        #         results = map_business_fields([biz_row])
+        #         if "manage product" in q_lower or "show product" in q_lower:
+        #             with mysql_ctx() as conn:
+        #                 cur = conn.cursor(dictionary=True)
+        #                 print("REQ BUSINESS ID:", req.business_id)
+        #                 selected_business_id = req.business_id
+        #                 if not selected_business_id:
+        #                     raise HTTPException(400, "No business selected.")
                         
-                        cur.execute( "SELECT * FROM products WHERE business_id = ?", (selected_business_id,))
-
-                        items = [dict(r) for r in cur.fetchall()]
-                    if not items:
-                        resp = {"type": "faq", "data": "You haven't added any products yet. Click 'Add Product' to start!"}
-                    else:
-                        resp = {"type": "manage_products", "content": items, "intro": "Here are your products:"}
-                    if chat_session_id:
-                        _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                    return resp
-                elif "manage deal" in q_lower or "show deal" in q_lower:
-                    with db_context() as conn:
-                        cur = conn.cursor()
-                        selected_business_id = req.business_id
-                        if not selected_business_id:
-                            raise HTTPException(400, "No business selected.")
+        #                 print("Querying:", PRODUCT_TABLE)
+        #                 print("Business ID:", selected_business_id)
+        #                 cur.execute( f"SELECT * FROM {PRODUCT_TABLE} WHERE business_id = %s", (selected_business_id,))
                         
-                        cur.execute( "SELECT * FROM deals WHERE business_id = ?", (selected_business_id,))
+        #                 items = cur.fetchall()
+        #                 for item in items:
+        #                     if item.get("price") is not None:
+        #                         item["price"] = float(item["price"])
+        #                     if item.get("created_at"):
+        #                         item["created_at"] = item["created_at"].isoformat()
+        #                 print("Products found:", items)
+        #             if not items:
+        #                 resp = {"type": "faq", "data": "You haven't added any products yet. Click 'Add Product' to start!"}
+        #             else:
+        #                 resp = {"type": "manage_products", "content": items, "intro": "Here are your products:"}
+        #             if chat_session_id:
+        #                 _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+        #             return resp
+        #         elif "manage deal" in q_lower or "show deal" in q_lower:
+        #             with mysql_ctx() as conn:
+        #                 cur = conn.cursor(dictionary=True)
+        #                 selected_business_id = req.business_id
+        #                 if not selected_business_id:
+        #                     raise HTTPException(400, "No business selected.")
                         
-                        items = [dict(r) for r in cur.fetchall()]
-                    if not items:
-                        resp = {"type": "faq", "data": "You haven't added any deals yet. Click 'Add Deal' to start!"}
-                    else:
-                        resp = {"type": "manage_deals", "content": items, "intro": "Here are your active deals:"}
-                    if chat_session_id:
-                        _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                    return resp
-                elif "show" in q_lower:
-                    mapped = map_business_fields(raw_matches)
-                    fields = [
-                        ("name", "Business Name"), ("category", "Category"),
-                        ("phone_number", "Phone"), ("address", "Address"),
-                        ("area", "Area"), ("city", "City"),
-                        ("state", "State"), ("website", "Website")
-                    ]
-                    suggs = []
-                    for fk, fn in fields:
-                        val = biz_row.get(fk)
-                        is_miss = not val or str(val).strip().lower() in ["none", "", "null", "not available"]
-                        suggs.append({
-                            "field": fk,
-                            "title": f"Update {fn}",
-                            "reason": f"{fn} is missing — add it now!" if is_miss else f"Current: {val}",
-                            "action": f"Update {fn}",
-                            "is_missing": is_miss
-                        })
-                    suggs.sort(key=lambda x: not x["is_missing"])
-                    resp = {
-                        "type": "database",
-                        "data": mapped,
-                        "intro": f"The businesses registered with your account:"
-                    }
-                    if chat_session_id:
-                        _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                    return resp
-                elif "update" in q_lower:
-                    fields = [
-                        ("name", lang_fetch("name", lang)), ("category", lang_fetch("category", lang)), 
-                        ("phone_number", lang_fetch("phone_number", lang)), ("address", lang_fetch("address", lang)), 
-                        ("area", lang_fetch("area", lang)), ("city", lang_fetch("city", lang)), 
-                        ("state", lang_fetch("state", lang)), ("website", lang_fetch("website", lang))
-                    ]
-                    suggs = []
-                    for fk, fn in fields:
-                        val = biz_row.get(fk)
-                        is_miss = not val or str(val).strip().lower() in ["none", "", "null", "not available"]
-                        suggs.append({
-                            "field": fk,
-                            "title": f"{lang_fetch('update_label', lang)} {fn}",
-                            "reason": f"{fn} {lang_fetch('missing_reason', lang)}" if is_miss else f"{lang_fetch('change_reason', lang)} {fn}.",
-                            "action": f"Update {fn}",
-                            "is_missing": is_miss
-                        })
-                    suggs.sort(key=lambda x: not x["is_missing"])
-                    resp = {
-                        "type": "database",
-                        "data": mapped,
-                        "intro": "Which business would you like to update?",
-                        "mode": "update_select"
-                    }
-                    if chat_session_id:
-                        _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                    return resp
-            except Exception as e:
-                return {"type": "faq", "data": "I had trouble finding your business. Please ensure you are logged in and have added your business."}
-
-        # --- Legacy Quick Command Shortcuts ---
-        cmd_map = {
-            "add product": "start_add_product",
-            "add deal": "start_add_deal",
-            "add business": "add_new_business",
-            "new business": "add_new_business",
-            "reset chat": "reset_chat",
-            "login": "login_trigger"
-        }
-        if q_lower in cmd_map:
-            return {"type": "command", "command": cmd_map[q_lower]}
-
-        # --- Intent: Comparison ---
-        if primary_intent == "Comparison" or "compare" in q_lower:
-            biz_names = re.split(r'\band\b|\bvs\b|,', q_lower.replace("compare", ""))
-            biz_names = [n.strip() for n in biz_names if n.strip()]
-            
-            matched_listings = []
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                for name in biz_names[:3]: # Compare up to 3
-                    cur.execute("SELECT * FROM master_table WHERE LOWER(business_name) LIKE %s LIMIT 1", (f"%{name}%",))
-                    row = cur.fetchone()
-                    if row:
-                        matched_listings.append(row)
+        #                 cur.execute( f"SELECT * FROM {DEAL_TABLE} WHERE business_id = %s", (selected_business_id,))
                         
-            if len(matched_listings) >= 2:
-                mapped = map_business_fields(matched_listings)
-                intro_ai = await compare_businesses_ai(mapped[0], mapped[1], lang)
-                resp = {
-                    "type": "database",
-                    "data": mapped,
-                    "intro": intro_ai,
-                    "prompt": "Here is the side-by-side comparison. Let me know if you want to look for details or reviews.",
-                    "suggestions": [
-                        {"title": f"Show {mapped[0]['business_name']} Reviews ⭐", "action": "query_rewrite", "query": f"reviews of {mapped[0]['business_name']}"},
-                        {"title": f"Show {mapped[1]['business_name']} Reviews ⭐", "action": "query_rewrite", "query": f"reviews of {mapped[1]['business_name']}"}
-                    ]
-                }
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-            else:
-                resp = {
-                    "type": "faq",
-                    "data": "I couldn't find the businesses you'd like to compare. Make sure their names are written clearly (e.g., 'Compare Apollo and Medanta').",
-                    "suggestions": [{"title": "Try another search 🔍", "action": "query_rewrite", "query": "Compare Gold's Gym and Anytime Fitness"}]
-                }
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
+        #                 items = cur.fetchall()
+        #                 for item in items:
+        #                     if item.get("expiry_date"):
+        #                         item["expiry_date"] = item["expiry_date"].isoformat()
+        #                     if item.get("created_at"):
+        #                         item["created_at"] = item["created_at"].isoformat()
+        #             if not items:
+        #                 resp = {"type": "faq", "data": "You haven't added any deals yet. Click 'Add Deal' to start!"}
+        #             else:
+        #                 resp = {"type": "manage_deals", "content": items, "intro": "Here are your active deals:"}
+        #             if chat_session_id:
+        #                 _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+        #             return resp
+                # if "show" in q_lower:
+                #     mapped = map_business_fields(raw_matches)
+                #     fields = [
+                #         ("name", "Business Name"), ("category", "Category"),
+                #         ("phone_number", "Phone"), ("address", "Address"),
+                #         ("area", "Area"), ("city", "City"),
+                #         ("state", "State"), ("website", "Website")
+                #     ]
+                #     suggs = []
+                #     for fk, fn in fields:
+                #         val = biz_row.get(fk)
+                #         is_miss = not val or str(val).strip().lower() in ["none", "", "null", "not available"]
+                #         suggs.append({
+                #             "field": fk,
+                #             "title": f"Update {fn}",
+                #             "reason": f"{fn} is missing — add it now!" if is_miss else f"Current: {val}",
+                #             "action": f"Update {fn}",
+                #             "is_missing": is_miss
+                #         })
+                #     suggs.sort(key=lambda x: not x["is_missing"])
+                #     resp = {
+                #         "type": "database",
+                #         "data": mapped,
+                #         "intro": f"The businesses registered with your account:"
+                #     }
+                #     if chat_session_id:
+                #         _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+                #     return resp
+        #         elif "update" in q_lower:
+        #             fields = [
+        #                 ("name", lang_fetch("name", lang)), ("category", lang_fetch("category", lang)), 
+        #                 ("phone_number", lang_fetch("phone_number", lang)), ("address", lang_fetch("address", lang)), 
+        #                 ("area", lang_fetch("area", lang)), ("city", lang_fetch("city", lang)), 
+        #                 ("state", lang_fetch("state", lang)), ("website", lang_fetch("website", lang))
+        #             ]
+        #             suggs = []
+        #             for fk, fn in fields:
+        #                 val = biz_row.get(fk)
+        #                 is_miss = not val or str(val).strip().lower() in ["none", "", "null", "not available"]
+        #                 suggs.append({
+        #                     "field": fk,
+        #                     "title": f"{lang_fetch('update_label', lang)} {fn}",
+        #                     "reason": f"{fn} {lang_fetch('missing_reason', lang)}" if is_miss else f"{lang_fetch('change_reason', lang)} {fn}.",
+        #                     "action": f"Update {fn}",
+        #                     "is_missing": is_miss
+        #                 })
+        #             suggs.sort(key=lambda x: not x["is_missing"])
+        #             resp = {
+        #                 "type": "database",
+        #                 "data": mapped,
+        #                 "intro": "Which business would you like to update?",
+        #                 "mode": "update_select"
+        #             }
+        #             if chat_session_id:
+        #                 _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
+        #             return resp
+        #     except Exception as e:
+        #         return {"type": "faq", "data": "I had trouble finding your business. Please ensure you are logged in and have added your business."}
 
-        # --- Intent: Business Details, Website, or Contact ---
-        if primary_intent in ["Business Details", "Business Contact", "Business Website"] or any(k in q_lower for k in ["website of", "phone of", "details of"]):
-            biz_name_candidate = q_lower.replace("website of", "").replace("phone of", "").replace("details of", "").replace("contact of", "").strip()
-            # Clean up
-            biz_name_candidate = re.sub(r'\b(what is the|show the|find the)\b', '', biz_name_candidate).strip()
-            
-            from mysql_pool import mysql_ctx
-            with mysql_ctx() as conn:
-                cur = conn.cursor(dictionary=True)
-                cur.execute("SELECT * FROM master_table WHERE LOWER(business_name) LIKE %s LIMIT 1", (f"%{biz_name_candidate}%",))
-                row = cur.fetchone()
-                
-            if row:
-                mapped = map_business_fields([row])[0]
-                val_detail = ""
-                if primary_intent == "Business Website":
-                    val_detail = f"The official website for **{mapped['business_name']}** is: {mapped['website_url'] or 'Not Available'}"
-                elif primary_intent == "Business Contact":
-                    val_detail = f"The phone number for **{mapped['business_name']}** is: {mapped['phone_number'] or 'Not Available'}"
-                else:
-                    val_detail = f"Here are the details for **{mapped['business_name']}** in {mapped['city']}: {mapped['business_description'] or 'A verified business listing.'}"
+        # # --- Legacy Quick Command Shortcuts ---
+        # cmd_map = {
+        #     "add product": "start_add_product",
+        #     "add deal": "start_add_deal",
+        #     "add business": "add_new_business",
+        #     "new business": "add_new_business",
+        #     "reset chat": "reset_chat",
+        #     "login": "login_trigger"
+        # }
+        # if q_lower in cmd_map:
+        #     return {"type": "command", "command": cmd_map[q_lower]}
 
-                resp = {
-                    "type": "database",
-                    "data": [mapped],
-                    "intro": val_detail,
-                    "prompt": "You can use the card buttons to call, get directions, visit their website, or leave a review.",
-                    "suggestions": [
-                        {"title": f"Check Reviews ⭐", "action": "query_rewrite", "query": f"reviews of {mapped['business_name']}"},
-                        {"title": f"Compare with others ⚖️", "action": "query_rewrite", "query": f"Compare {mapped['business_name']} and Anytime Fitness"}
-                    ]
-                }
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-
-        # --- Intent: Product Search ---
-        if primary_intent == "Product Search" or q_lower in ["products", "show products", "trending products", "recently added products"]:
-            product_category = entities.get("category")
-            product_name = entities.get("product")
-            if not product_name and not product_category:
-                product_name = q_lower.replace("products", "").replace("show", "").replace("trending", "").replace("recently added", "").strip() or None
-                
-            p_limit = entities.get("limit") or 10
-            p_offset = 0
-            try:
-                from mysql_pool import mysql_ctx
-                with mysql_ctx() as (conn, cur):
-                    query_str = "SELECT * FROM product_master WHERE 1=1"
-                    params = []
-                    if product_category:
-                        query_str += " AND (LOWER(category_name) LIKE %s OR LOWER(sub_category_name) LIKE %s)"
-                        params.extend([f"%{product_category.lower()}%", f"%{product_category.lower()}%"])
-                    if product_name:
-                        query_str += " AND (LOWER(product_name) LIKE %s OR LOWER(brand) LIKE %s)"
-                        params.extend([f"%{product_name.lower()}%", f"%{product_name.lower()}%"])
-                        
-                    ranking_map_prod = {"Budget Search": "budget", "Highest Rated": "highest_rated"}
-                    resolved_ranking = entities.get("ranking") or ranking_map_prod.get(primary_intent)
-                    if resolved_ranking == "highest_rated":
-                        query_str += " ORDER BY stars DESC"
-                    elif resolved_ranking == "budget":
-                        query_str += " ORDER BY price ASC"
-                    else:
-                        query_str += " ORDER BY stars DESC"
-                        
-                    query_str += f" LIMIT {p_limit} OFFSET {p_offset}"
-                    
-                    cur.execute(query_str, tuple(params))
-                    columns = [col[0] for col in cur.description]
-                    prod_results = [dict(zip(columns, row)) for row in cur.fetchall()]
-                    
-                formatted_products = []
-                for p in prod_results:
-                    formatted_products.append({
-                        "business_name": p.get("product_name"),
-                        "category": p.get("category_name"),
-                        "city": p.get("brand") or "Generic Brand",
-                        "phone_number": f"₹{p.get('price')}" if p.get("price") else "Price N/A",
-                        "rating": float(p.get("stars") or 0),
-                        "review_count": int(p.get("reviews") or 0),
-                        "image_url": p.get("img_url"),
-                        "website_url": p.get("product_url"),
-                        "business_description": p.get("description")
-                    })
-                    
-                summary_data = await anyio.to_thread.run_sync(
-                    generate_conversational_summary_and_chips, 
-                    req.query, 
-                    formatted_products, 
-                    lang, 
-                    chat_history
-                )
-                
-                resp = {
-                    "type": "database",
-                    "data": formatted_products,
-                    "intro": summary_data.get("summary", ""),
-                    "prompt": "Here are the top products I found:",
-                    "suggestions": [{"title": s, "action": "query_rewrite", "query": s} for s in summary_data.get("suggestions", [])],
-                    "search_metadata": {"offset": p_offset, "limit": p_limit}
-                }
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-                
-            except Exception as e:
-                print(f"[PRODUCT SEARCH ERROR] {e}")
-                resp = {"type": "faq", "data": "I encountered an error while searching for products."}
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-
-        # --- Hybrid Business Search Flow (Primary Path) ---
-        category = entities.get("category")
-        city = entities.get("location", {}).get("city")
-        extracted_area = entities.get("location", {}).get("area")
-        ranking = entities.get("ranking")
-        filters = entities.get("filters", {})
-        
-        # Manual parameter extraction fallback for forced searches
-        business_search_keywords_list = [
-            "restaurant", "hotel", "hospital", "gym", "salon", "school", "cafe", "shop", 
-            "doctor", "clinic", "food", "dining", "spa", "boutique", "fitness", "dentist",
-            "bakery", "service", "lawyer", "advocate", "mechanic", "plumber"
-        ]
-        
-        if not category:
-            # Look up categories cache
-            for cat in sorted(CATEGORIES_CACHE, key=len, reverse=True):
-                if cat.lower() in q_lower:
-                    category = cat
-                    break
-            # Fallback to business keywords if cache has no match
-            if not category:
-                for k in business_search_keywords_list:
-                    if k in q_lower:
-                        category = k.capitalize()
-                        break
-                        
-        # Check if India-wide search is explicitly mentioned
-        is_india_wide = "india" in q_lower or (entities.get("location", {}).get("country") and entities.get("location", {}).get("country").lower() == "india")
-        if is_india_wide:
-            city = "india"
-            
-        # Extract city and area manually if NLU missed it
-        if city != "india" and not city:
-            for c in sorted(CITIES_CACHE, key=len, reverse=True):
-                if c.lower() in q_lower:
-                    city = c
-                    break
-                    
-        if not extracted_area:
-            for a in sorted(AREAS_CACHE, key=len, reverse=True):
-                if a.lower().replace(" ", "") in q_lower.replace(" ", ""):
-                    extracted_area = a
-                    break
-        
-        # Context carrying over
-        last_meta = None
-        if chat_session_id:
-            last_meta = _get_last_search_metadata(chat_session_id)
-            
-        if not category and last_meta and last_meta.get("category"):
-            category = last_meta.get("category")
-        if not city and last_meta and last_meta.get("city"):
-            city = last_meta.get("city")
-        if not extracted_area and last_meta and last_meta.get("area"):
-            extracted_area = last_meta.get("area")
-
-        # Normalize generic category words to None (to search all categories)
-        if category and category.lower() in ["business", "businesses", "general", "all", "any"]:
-            category = None
-
-        # Offset / limit
-        current_limit = entities.get("limit") or 10
-        current_offset = 0
-        if last_meta:
-            is_next = q_lower in ["next", "show more", "next results", "show next 10 results", "show next 5 results", "next 5", "next 10", "next 5 results", "next 10 results", "show next 10", "next option", "more", "/next"]
-            is_prev = q_lower in ["prev", "previous", "previous results", "show previous 10 results", "show previous 5 results", "previous 5 results", "/prev"]
-            limit_val = last_meta.get("limit") or current_limit
-            if is_next:
-                current_offset = last_meta.get("offset", 0) + limit_val
-                current_limit = limit_val
-            elif is_prev:
-                current_offset = max(0, last_meta.get("offset", 0) - limit_val)
-                current_limit = limit_val
-
-        # Fallback city
-        if not city:
-            if session_phone or session_email:
-                try:
-                    from business_by_phone import get_businesses_by_phone, get_businesses_by_email
-                    ub = get_businesses_by_phone(session_phone) if session_phone else get_businesses_by_email(session_email)
-                    if ub: city = ub[0].get("city", "").lower()
-                except:
-                    pass
-            if not city:
-                try:
-                    from mysql_pool import mysql_ctx
-                    with mysql_ctx() as conn:
-                        cur = conn.cursor()
-                        cur.execute("SELECT city_name FROM Top_cities_rank ORDER BY city_rank ASC LIMIT 1")
-                        r = cur.fetchone()
-                        city = r[0].lower() if r else "surat"
-                except Exception as e:
-                    print(f"Fallback city error: {e}")
-                    city = "surat"
-
-        # Map ranking/intent
-        ranking_map = {
-            "Budget Search": "budget",
-            "Luxury Search": "luxury",
-            "Highest Rated": "highest_rated",
-            "Most Reviewed": "most_reviewed",
-            "Recently Added": "newest",
-            "Trending": "trending"
-        }
-        resolved_ranking = ranking or ranking_map.get(primary_intent)
-
-        # Check Category Search
-        if category or primary_intent == "Business Search":
-            print(f"[HYBRID SEARCH] Database First. Querying: category={category}, city={city}, area={extracted_area}")
-            
-            # Step 1: Database First Search
-            results = query_local_businesses(
-                category=category, 
-                city=city, 
-                area=extracted_area, 
-                min_rating=None, 
-                open_only=filters.get("open_now", False), 
-                filters=filters, 
-                ranking_intent=resolved_ranking,
-                offset=current_offset, 
-                limit=current_limit
-            )
-            
-            # Step 2: Ensure strictly Read-Only logic
-            explicit_online = any(w in q_lower for w in ["online", "live", "web", "scrape", "internet", "google", "find online", "search online", "latest", "current", "real-time", "real time"])
-            
-            if explicit_online and current_offset == 0:
-                resp = {
-                    "type": "faq",
-                    "data": "I am a strictly Read-Only AI assistant and only provide information from our verified local database. I cannot search the internet.",
-                    "suggestions": [{"title": "Search Local Listings 🏢", "action": "query_rewrite", "query": "Local Businesses"}]
-                }
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-
-            if results or current_offset > 0:
-                mapped_results = map_business_fields(results)
-                total_count = count_local_businesses(category, city, area=extracted_area, filters=filters)
-                
-                pending_save = None
-
-                # Step 3: Call OpenRouter for Conversational summary & contextual suggestion chips
-                summary_data = await anyio.to_thread.run_sync(
-                    generate_conversational_summary_and_chips, 
-                    req.query, 
-                    mapped_results, 
-                    lang, 
-                    chat_history
-                )
-                
-                # Format Suggestions
-                suggestions = []
-                for s in summary_data.get("suggestions", []):
-                    suggestions.append({
-                        "title": s,
-                        "action": "query_rewrite",
-                        "query": s
-                    })
-                    
-                # Standard pagination chips
-                if total_count > current_offset + current_limit:
-                    suggestions.append({
-                        "title": "Next 10 Results ⏭️",
-                        "action": "next_option",
-                        "query": "Show Next 10 Results"
-                    })
-                if current_offset > 0:
-                    suggestions.append({
-                        "title": "Previous Results ⏮️",
-                        "action": "prev_option",
-                        "query": "Previous Results"
-                    })
-                    
-                search_meta = {
-                    "category": category,
-                    "city": city,
-                    "area": extracted_area,
-                    "offset": current_offset,
-                    "limit": current_limit,
-                    "pending_save_business": pending_save
-                }
-                
-                resp = {
-                    "type": "database",
-                    "data": mapped_results,
-                    "intro": summary_data.get("summary", ""),
-                    "prompt": "Use the options below to filter or compare listings:",
-                    "suggestions": suggestions,
-                    "search_metadata": search_meta
-                }
-                
-                # Log to history for Analytics
-                try:
-                    conn = sqlite3.connect(DATABASE_URL)
-                    cur = conn.cursor()
-                    cur.execute("""
-                        INSERT INTO search_history (user_id, search_query, resolved_city, resolved_category)
-                        VALUES (?, ?, ?, ?)
-                    """, (get_current_user_id(session=req.session), req.query, city, category))
-                    conn.commit()
-                    conn.close()
-                except Exception as cache_err:
-                    pass
-
-                # Set Cache
-                search_cache.set(req.query, lang, resp)
-
-                if chat_session_id:
-                    _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
-                return resp
-
-        # --- Fallback: Conversational AI Response ---
-        ai_resp = await anyio.to_thread.run_sync(get_ai_conversational_response, req.query, lang, chat_history)
-        resp = {
-            "type": "faq",
-            "data": ai_resp.get("response", ""),
-            "suggestions": [{"title": s, "action": "query_rewrite", "query": s} for s in ai_resp.get("suggestions", [])]
-        }
-        if chat_session_id:
-            _save_chat_message(chat_session_id, "assistant", json.dumps(resp))
         return resp
-
     except Exception as e:
         print(f"[Search Query Error] {e}")
         raise HTTPException(400, str(e))
+
 @app.put("/api/business/{business_id}")
 def update_biz(business_id: int, req: UpdateRequest, payload: dict = Depends(get_authenticated_user)):
     user_id = payload.get("id")
-    with db_context() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (business_id,))
+    with mysql_ctx() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT owner_id FROM chatbot_add_business WHERE global_business_id = %s", (business_id,))
         row = cur.fetchone()
-        if row and row[0] and row[0] != user_id:
-            raise HTTPException(403, "You do not have permission to modify this business listing.")
+        if row and row["owner_id"] and row["owner_id"] != user_id:
+            raise HTTPException(403, "You do not have permission to update this business.")
     try:
         from business_update import update_business
         update_business(business_id, {req.field: req.value})
-        log_audit_action(user_id, "UPDATE", "g_map_master_table", business_id, "system")
+        log_audit_action(user_id, "UPDATE", "chatbot_add_business", business_id, "system")
         return {"success": True}
     except Exception as e: raise HTTPException(400, str(e))
 
@@ -2149,18 +2082,18 @@ def add_biz(req: BusinessAddRequest, payload: dict = Depends(get_authenticated_u
     print("JWT PAYLOAD:", payload)
     try:
         from datetime import datetime
-        print(f"DEBUG: add_biz request: {req.dict()}")
         
         # Proactive duplicate check to prevent duplicate business listings
         phone_check = req.phone.strip() if req.phone else ""
-        with db_context() as conn:
-            cur = conn.cursor()
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
             cur.execute(
-                f"SELECT global_business_id FROM {BIZ_TABLE} WHERE LOWER(business_name) = ? AND LOWER(city) = ? AND (phone_number = ? OR LOWER(address) = ?)",
+                f"SELECT global_business_id FROM {BIZ_TABLE} WHERE LOWER(business_name) = %s AND LOWER(city) = %s AND (phone_number = %s OR LOWER(address) = %s)",
                 (req.name.strip().lower(), req.city.strip().lower(), phone_check, req.address.strip().lower())
             )
             if cur.fetchone():
                 raise HTTPException(400, "A business listing with this name and phone/address already exists in this city.")
+            duplicate = cur.fetchone()
 
             created_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
             email_val = (req.email or "").strip().lower()
@@ -2170,12 +2103,14 @@ def add_biz(req: BusinessAddRequest, payload: dict = Depends(get_authenticated_u
                 INSERT INTO {BIZ_TABLE} (
                     business_name, address, phone_number, business_category, city, area, state, 
                     reviews_count, ratings, created_at, email, owner_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (req.name, req.address, req.phone, req.category, req.city, req.area, req.state, 0, 0.0, created_at, email_val, user_id)
             )
             new_id = cur.lastrowid
             conn.commit()
+            print("✅ INSERT COMMITTED")
+            print("New ID:", new_id)
 
         # Append to CSV
         try:
@@ -2197,16 +2132,16 @@ def add_biz(req: BusinessAddRequest, payload: dict = Depends(get_authenticated_u
 @app.delete("/api/business/{business_id}")
 def delete_business_route(business_id: int, payload: dict = Depends(get_authenticated_user)):
     user_id = payload.get("id")
-    with db_context() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (business_id,))
+    with mysql_ctx() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"SELECT owner_id FROM {BIZ_TABLE} WHERE global_business_id = %s LIMIT 1", (business_id,))
         row = cur.fetchone()
-        if row and row[0] and row[0] != user_id:
+        if row and row["owner_id"] and row["owner_id"] != user_id:
             raise HTTPException(403, "You do not have permission to delete this business listing.")
         
-        cur.execute("DELETE FROM products WHERE business_id = ?", (business_id,))
-        cur.execute("DELETE FROM deals WHERE business_id = ?", (business_id,))
-        cur.execute(f"DELETE FROM {BIZ_TABLE} WHERE global_business_id = ?", (business_id,))
+        cur.execute(f"DELETE FROM {PRODUCT_TABLE} WHERE business_id = %s", (business_id,))
+        cur.execute(f"DELETE FROM {DEAL_TABLE} WHERE business_id = %s", (business_id,))
+        cur.execute(f"DELETE FROM {BIZ_TABLE} WHERE global_business_id = %s", (business_id,))
         conn.commit()
 
     # Sync deletion to CSV
@@ -2232,9 +2167,9 @@ def delete_business_route(business_id: int, payload: dict = Depends(get_authenti
 def get_merchant_businesses(payload: dict = Depends(get_authenticated_user)):
     user_id = payload.get("id")
     try:
-        with db_context() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM g_map_master_table WHERE owner_id = ?", (user_id,))
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(f"SELECT * FROM {BIZ_TABLE} WHERE owner_id = %s", (user_id,))
             rows = [dict(r) for r in cur.fetchall()]
         return {
             "success": True,
@@ -2250,26 +2185,25 @@ def add_product(req: AddProductRequest, payload: dict = Depends(get_authenticate
     user_id = payload.get("id")
     if not req.business_id:
         raise HTTPException(400, "business_id is required. Please login first.")
-    with db_context() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (req.business_id,))
+    with mysql_ctx() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute( f"SELECT owner_id FROM {BIZ_TABLE} WHERE global_business_id = %s", (req.business_id,))
         row = cur.fetchone()
-        if row and row[0] and row[0] != user_id:
+        cur.fetchall()
+        if row and row["owner_id"] and row["owner_id"] != user_id:
             raise HTTPException(403, "You do not have permission to manage products for this business listing.")
     try:
         from datetime import datetime
-        print("FULL REQUEST:", req.dict())
-        # print(f"DEBUG add_product: business_id={req.business_id}, name={req.name}, price={req.price}, category={req.category}")
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
             created_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            cur.execute("""
-                INSERT INTO products (business_id, name, price, description, category, created_at, image_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+            cur.execute(F"""
+                INSERT INTO {PRODUCT_TABLE} (business_id, product_name, price, description, category, created_at, image_url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (int(req.business_id), req.name, float(req.price) if req.price is not None else None, req.description or "", req.category or "", created_at, req.image_url or ""))
             new_id = cur.lastrowid
             conn.commit()
-        log_audit_action(user_id, "CREATE", "products", new_id, "system")
+            log_audit_action(user_id, "CREATE", PRODUCT_TABLE, new_id, "system")
         return {"success": True}
     except Exception as e:
         print(f"ERROR add_product: {e}")
@@ -2280,33 +2214,33 @@ def add_deal(req: AddDealRequest, payload: dict = Depends(get_authenticated_user
     user_id = payload.get("id")
     if not req.business_id:
         raise HTTPException(400, "business_id is required.")
-    with db_context() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (req.business_id,))
+    with mysql_ctx() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"SELECT owner_id FROM {BIZ_TABLE} WHERE global_business_id = %s", (req.business_id,))
         row = cur.fetchone()
-        if row and row[0] and row[0] != user_id:
+        if row and row["owner_id"] and row["owner_id"] != user_id:
             raise HTTPException(403, "You do not have permission to manage deals for this business listing.")
     try:
         from datetime import datetime
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
             created_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            cur.execute("""
-                INSERT INTO deals (business_id, title, discount_pct, expiry_date, description, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+            cur.execute(f"""
+                INSERT INTO {DEAL_TABLE} (business_id, title, discount_pct, expiry_date, description, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
             """, (req.business_id, req.title, req.discount_pct, req.expiry_date, req.description, created_at))
             new_id = cur.lastrowid
             conn.commit()
-        log_audit_action(user_id, "CREATE", "deals", new_id, "system")
+            log_audit_action(user_id, "CREATE", DEAL_TABLE, new_id, "system")
         return {"success": True}
     except Exception as e: raise HTTPException(400, str(e))
 
 @app.get("/api/business/{biz_id}/products")
 def get_products(biz_id: int):
     try:
-        with db_context() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM products WHERE business_id = ?", (biz_id,))
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(f"SELECT * FROM {PRODUCT_TABLE} WHERE business_id = %s", (biz_id,))
             rows = [dict(r) for r in cur.fetchall()]
         return rows
     except Exception as e: raise HTTPException(400, str(e))
@@ -2314,9 +2248,9 @@ def get_products(biz_id: int):
 @app.get("/api/business/{biz_id}/deals")
 def get_deals(biz_id: int):
     try:
-        with db_context() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM deals WHERE business_id = ?", (biz_id,))
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(f"SELECT * FROM {DEAL_TABLE} WHERE business_id = %s", (biz_id,))
             rows = [dict(r) for r in cur.fetchall()]
         return rows
     except Exception as e: raise HTTPException(400, str(e))
@@ -2324,43 +2258,46 @@ def get_deals(biz_id: int):
 @app.delete("/api/products/{product_id}")
 def delete_product(product_id: int, payload: dict = Depends(get_authenticated_user)):
     user_id = payload.get("id")
-    with db_context() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT business_id FROM products WHERE id = ?", (product_id,))
+    with mysql_ctx() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"SELECT business_id FROM {PRODUCT_TABLE} WHERE id = %s", (product_id,))
         p_row = cur.fetchone()
         if p_row:
-            cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (p_row[0],))
+            cur.execute(f"SELECT owner_id FROM {BIZ_TABLE} WHERE global_business_id = %s", (p_row["business_id"],))
             b_row = cur.fetchone()
-            if b_row and b_row[0] and b_row[0] != user_id:
+            if b_row and b_row["owner_id"] and b_row["owner_id"] != user_id:
                 raise HTTPException(403, "You do not have permission to modify this product.")
-        cur.execute("DELETE FROM products WHERE id = ?", (product_id,))
+        cur.execute(f"DELETE FROM {PRODUCT_TABLE} WHERE id = %s", (product_id,))
         conn.commit()
-    log_audit_action(user_id, "DELETE", "products", product_id, "system")
+    log_audit_action(user_id, "DELETE", PRODUCT_TABLE, product_id, "system")
     return {"success": True}
 
 @app.delete("/api/deals/{deal_id}")
 def delete_deal(deal_id: int, payload: dict = Depends(get_authenticated_user)):
     user_id = payload.get("id")
-    with db_context() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT business_id FROM deals WHERE id = ?", (deal_id,))
+    with mysql_ctx() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"SELECT business_id FROM {DEAL_TABLE} WHERE id = %s", (deal_id,))
         d_row = cur.fetchone()
         if d_row:
-            cur.execute("SELECT owner_id FROM g_map_master_table WHERE global_business_id = ?", (d_row[0],))
+            cur.execute(f"SELECT owner_id FROM {BIZ_TABLE} WHERE global_business_id = %s", (d_row["business_id"],))
             b_row = cur.fetchone()
-            if b_row and b_row[0] and b_row[0] != user_id:
+            if b_row and b_row["owner_id"] and b_row["owner_id"] != user_id:
                 raise HTTPException(403, "You do not have permission to modify this deal.")
-        cur.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
+        cur.execute(f"DELETE FROM {DEAL_TABLE} WHERE id = %s", (deal_id,))
         conn.commit()
-    log_audit_action(user_id, "DELETE", "deals", deal_id, "system")
+    log_audit_action(user_id, "DELETE", DEAL_TABLE, deal_id, "system")
     return {"success": True}
 
 @app.get("/api/business/search-name")
 def search_by_name(name: str):
     try:
-        with db_context() as conn:
-            cur = conn.cursor()
-            cur.execute(f"SELECT * FROM {BIZ_TABLE} WHERE business_name LIKE ? LIMIT 10", (f"%{name}%",))
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                f"SELECT * FROM {BIZ_TABLE} WHERE business_name LIKE %s LIMIT 10",
+                (f"%{name}%",)
+            )
             rows = [dict(r) for r in cur.fetchall()]
         return map_business_fields(rows)
     except Exception as e:
@@ -2369,10 +2306,10 @@ def search_by_name(name: str):
 @app.get("/api/business/search-address")
 def search_by_address(address: str):
     try:
-        with db_context() as conn:
-            cur = conn.cursor()
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
             cur.execute(
-                f"SELECT * FROM {BIZ_TABLE} WHERE address LIKE ? OR area LIKE ? OR city LIKE ? LIMIT 10",
+                f"SELECT * FROM {BIZ_TABLE} WHERE address LIKE %s OR area LIKE %s OR city LIKE %s LIMIT 10",
                 (f"%{address}%", f"%{address}%", f"%{address}%")
             )
             rows = [dict(r) for r in cur.fetchall()]
@@ -2424,13 +2361,12 @@ def get_trending():
 
 @app.get("/api/analytics")
 def get_analytics():
-    """Power BI-style analytics data — business stats from MySQL, app stats from SQLite"""
+    """Power BI-style analytics data — all stats from MySQL"""
     try:
-        # ── Business stats from MySQL ──
+        # Business stats from MySQL
         with mysql_ctx() as myconn:
             cur = myconn.cursor(dictionary=True)
 
-            # KPIs
             cur.execute(f"SELECT COUNT(*) as total FROM {BIZ_TABLE}")
             total_businesses = cur.fetchone()['total']
 
@@ -2452,7 +2388,6 @@ def get_analytics():
             cur.execute(f"SELECT COUNT(*) as cnt FROM {BIZ_TABLE} WHERE ratings >= 4.5")
             top_rated = cur.fetchone()['cnt']
 
-            # Categories by count (bar chart)
             cur.execute(f"""
                 SELECT business_category as name, COUNT(*) as count 
                 FROM {BIZ_TABLE} 
@@ -2461,7 +2396,6 @@ def get_analytics():
             """)
             categories_data = cur.fetchall()
 
-            # Cities distribution (donut chart)
             cur.execute(f"""
                 SELECT city as name, COUNT(*) as count 
                 FROM {BIZ_TABLE} 
@@ -2470,7 +2404,6 @@ def get_analytics():
             """)
             cities_data = cur.fetchall()
 
-            # States distribution
             cur.execute(f"""
                 SELECT state as name, COUNT(*) as count 
                 FROM {BIZ_TABLE} 
@@ -2479,7 +2412,6 @@ def get_analytics():
             """)
             states_data = cur.fetchall()
 
-            # Ratings distribution (histogram)
             cur.execute(f"""
                 SELECT 
                     CASE 
@@ -2496,83 +2428,64 @@ def get_analytics():
             """)
             ratings_dist = cur.fetchall()
 
-            # Top businesses by reviews
             cur.execute(f"""
                 SELECT business_name, business_category, city, ratings
                 FROM {BIZ_TABLE}
                 WHERE ratings > 0 AND business_name IS NOT NULL AND business_name != ''
-                ORDER BY ratings DESC
-                LIMIT 10
+                ORDER BY ratings DESC LIMIT 10
             """)
             top_businesses = cur.fetchall()
 
-            # Monthly registrations (based on created_at)
             cur.execute(f"""
-                SELECT 
-                    DATE_FORMAT(created_at, '%%Y-%%m') as month,
-                    COUNT(*) as count
+                SELECT DATE_FORMAT(created_at, '%%Y-%%m') as month, COUNT(*) as count
                 FROM {BIZ_TABLE}
                 WHERE created_at IS NOT NULL
-                GROUP BY month
-                ORDER BY month
-                LIMIT 12
+                GROUP BY month ORDER BY month LIMIT 12
             """)
             monthly_data = cur.fetchall()
 
-            # Category-City heatmap data
             cur.execute(f"""
                 SELECT business_category, city, COUNT(*) as count
                 FROM {BIZ_TABLE}
                 WHERE business_category != '' AND city != ''
-                GROUP BY business_category, city
-                ORDER BY count DESC
-                LIMIT 50
+                GROUP BY business_category, city ORDER BY count DESC LIMIT 50
             """)
             heatmap_data = cur.fetchall()
 
-            # Products count from MySQL
-            cur.execute("SELECT COUNT(*) as cnt FROM product_master")
-            total_products = cur.fetchone()['cnt']
-
-            total_deals = 0  # no deals table in remote MySQL
-
-        # ── App stats from SQLite ──
-        with db_context() as sqlite_conn:
-            scur = sqlite_conn.cursor()
-
-            scur.execute("SELECT COUNT(DISTINCT user_id) as cnt FROM chat_sessions WHERE user_id IS NOT NULL")
-            total_users = scur.fetchone()['cnt']
-
-            scur.execute("SELECT COUNT(*) as cnt FROM chat_sessions")
-            total_chats = scur.fetchone()['cnt']
-
-            # Real-time search history trends
             try:
-                scur.execute("SELECT COUNT(*) as cnt FROM search_history")
-                total_searches = scur.fetchone()['cnt'] or 0
-                scur.execute("""
-                    SELECT search_query as name, COUNT(*) as count 
-                    FROM search_history 
-                    GROUP BY search_query ORDER BY count DESC LIMIT 10
-                """)
-                search_trends = [dict(r) for r in scur.fetchall()]
+                cur.execute("SELECT COUNT(*) as cnt FROM product_master")
+                total_products = cur.fetchone()['cnt']
             except Exception:
-                total_searches = 0
-                search_trends = []
+                total_products = 0
 
-            # Total registered users
+            # App stats from MySQL chatbot tables
             try:
-                scur.execute("SELECT COUNT(*) as cnt FROM users")
-                total_registered_users = scur.fetchone()['cnt'] or 0
+                cur.execute("SELECT COUNT(DISTINCT user_id) as cnt FROM chatbot_chat_sessions WHERE user_id IS NOT NULL")
+                total_users = cur.fetchone()['cnt'] or 0
+            except Exception:
+                total_users = 0
+
+            try:
+                cur.execute("SELECT COUNT(*) as cnt FROM chatbot_chat_sessions")
+                total_chats = cur.fetchone()['cnt'] or 0
+            except Exception:
+                total_chats = 0
+
+            try:
+                cur.execute("SELECT COUNT(*) as cnt FROM chatbot_users")
+                total_registered_users = cur.fetchone()['cnt'] or 0
             except Exception:
                 total_registered_users = 0
-            
-            # Total audit log actions
+
             try:
-                scur.execute("SELECT COUNT(*) as cnt FROM audit_logs")
-                total_audit_logs = scur.fetchone()['cnt'] or 0
+                cur.execute("SELECT COUNT(*) as cnt FROM chatbot_audit_logs")
+                total_audit_logs = cur.fetchone()['cnt'] or 0
             except Exception:
                 total_audit_logs = 0
+
+            total_searches = 0
+            search_trends = []
+            total_deals = 0
 
         return {
             "kpis": {
@@ -2604,7 +2517,6 @@ def get_analytics():
     except Exception as e:
         print(f"Analytics error: {e}")
         raise HTTPException(500, str(e))
-
 @app.get("/api/merchant/analytics/{business_id}")
 def get_merchant_analytics(business_id: int):
     try:
@@ -2612,18 +2524,19 @@ def get_merchant_analytics(business_id: int):
         reviews_count = 0
         avg_rating = 0.0
         try:
-            with db_context() as conn:
+            with mysql_ctx() as conn:
                 cur = conn.cursor()
                 cur.execute("""
-                    SELECT COUNT(*) FROM audit_logs 
-                    WHERE row_id = ? AND action = 'UPDATE_BUSINESS'
+                    SELECT COUNT(*) FROM chatbot_audit_logs 
+                    WHERE entity_id = %s AND action = 'UPDATE_BUSINESS'
                 """, (business_id,))
                 update_count = cur.fetchone()[0] or 0
-                cur.execute("SELECT COUNT(*), AVG(rating) FROM reviews WHERE business_id = ?", (business_id,))
+                cur.execute("SELECT COUNT(*), AVG(rating) FROM chatbot_reviews WHERE business_id = %s", (business_id,))
                 rev_row = cur.fetchone()
                 reviews_count = rev_row[0] or 0
-                avg_rating = round(rev_row[1] or 0.0, 1)
-        except Exception:
+                avg_rating = round(float(rev_row[1] or 0.0), 1)
+        except Exception as e:
+            print(f"Error fetching merchant analytics from MySQL: {e}")
             pass
             
         # Create dynamic realistic metrics based on business ID
@@ -2660,10 +2573,10 @@ def create_chat_session(req: ChatSessionCreate):
     try:
         session_id = str(uuid.uuid4())
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO chat_sessions (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO chatbot_chat_sessions (id, user_id, title, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
                 (session_id, req.user_id, req.title or "New Chat", now, now)
             )
             conn.commit()
@@ -2680,12 +2593,11 @@ class ChatSyncRequest(BaseModel):
 def sync_guest_chats(req: ChatSyncRequest):
     """Synchronizes guest chats to the user's account after login by updating the user_id field in the database."""
     try:
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
             now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            # Update user_id for all sessions belonging to guest_user_id
             cur.execute(
-                "UPDATE chat_sessions SET user_id = ?, updated_at = ? WHERE user_id = ?",
+                "UPDATE chatbot_chat_sessions SET user_id = %s, updated_at = %s WHERE user_id = %s",
                 (req.user_id, now, req.guest_user_id)
             )
             count = cur.rowcount
@@ -2699,14 +2611,14 @@ def sync_guest_chats(req: ChatSyncRequest):
 def list_chat_sessions(user_id: str):
     """List all chat sessions for a specific user (phone or email). Private — filtered by user_id."""
     try:
-        with db_context() as conn:
-            cur = conn.cursor()
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
             cur.execute(
-                "SELECT id, title, created_at, updated_at, is_pinned FROM chat_sessions WHERE user_id = ? ORDER BY is_pinned DESC, updated_at DESC LIMIT 50",
+                "SELECT id, title, created_at, updated_at, is_pinned FROM chatbot_chat_sessions WHERE user_id = %s ORDER BY is_pinned DESC, updated_at DESC LIMIT 50",
                 (user_id,)
             )
             rows = cur.fetchall()
-            return [{"session_id": r["id"], "title": r["title"], "created_at": r["created_at"], "updated_at": r["updated_at"], "is_pinned": bool(r["is_pinned"])} for r in rows]
+            return [{"session_id": r["id"], "title": r["title"], "created_at": str(r["created_at"]), "updated_at": str(r["updated_at"]), "is_pinned": bool(r["is_pinned"])} for r in rows]
     except Exception as e:
         print(f"Error listing chat sessions: {e}")
         raise HTTPException(400, str(e))
@@ -2716,13 +2628,13 @@ def rename_chat_session(session_id: str, req: dict, user_id: Optional[str] = Non
     title = req.get("title")
     if not title: raise HTTPException(400, "Title is required")
     try:
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
             if user_id:
-                cur.execute("SELECT id FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+                cur.execute("SELECT id FROM chatbot_chat_sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
                 if not cur.fetchone():
                     raise HTTPException(403, "Access denied.")
-            cur.execute("UPDATE chat_sessions SET title = ? WHERE id = ?", (title, session_id))
+            cur.execute("UPDATE chatbot_chat_sessions SET title = %s WHERE id = %s", (title, session_id))
             conn.commit()
         return {"success": True}
     except HTTPException:
@@ -2734,13 +2646,13 @@ def rename_chat_session(session_id: str, req: dict, user_id: Optional[str] = Non
 def pin_chat_session(session_id: str, req: dict, user_id: Optional[str] = None):
     is_pinned = req.get("is_pinned", False)
     try:
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
             if user_id:
-                cur.execute("SELECT id FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+                cur.execute("SELECT id FROM chatbot_chat_sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
                 if not cur.fetchone():
                     raise HTTPException(403, "Access denied.")
-            cur.execute("UPDATE chat_sessions SET is_pinned = ? WHERE id = ?", (1 if is_pinned else 0, session_id))
+            cur.execute("UPDATE chatbot_chat_sessions SET is_pinned = %s WHERE id = %s", (1 if is_pinned else 0, session_id))
             conn.commit()
         return {"success": True}
     except HTTPException:
@@ -2752,19 +2664,18 @@ def pin_chat_session(session_id: str, req: dict, user_id: Optional[str] = None):
 def get_chat_history(session_id: str, user_id: Optional[str] = None):
     """Get all messages for a session. Optionally verify ownership via user_id."""
     try:
-        with db_context() as conn:
-            cur = conn.cursor()
-            # Ownership check: if user_id is provided, ensure this session belongs to them
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
             if user_id:
-                cur.execute("SELECT id FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+                cur.execute("SELECT id FROM chatbot_chat_sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
                 if not cur.fetchone():
                     raise HTTPException(403, "Access denied: session does not belong to this user.")
             cur.execute(
-                "SELECT role, content, timestamp FROM chat_messages WHERE session_id = ? ORDER BY id ASC",
+                "SELECT role, content, timestamp FROM chatbot_chat_messages WHERE session_id = %s ORDER BY id ASC",
                 (session_id,)
             )
             rows = cur.fetchall()
-            return [{"role": r["role"], "content": r["content"], "timestamp": r["timestamp"]} for r in rows]
+            return [{"role": r["role"], "content": r["content"], "timestamp": str(r["timestamp"])} for r in rows]
     except HTTPException:
         raise
     except Exception as e:
@@ -2775,14 +2686,14 @@ def get_chat_history(session_id: str, user_id: Optional[str] = None):
 def delete_chat_session(session_id: str, user_id: Optional[str] = None):
     """Delete a chat session and all its messages. Optionally verify ownership."""
     try:
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
             if user_id:
-                cur.execute("SELECT id FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+                cur.execute("SELECT id FROM chatbot_chat_sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
                 if not cur.fetchone():
                     raise HTTPException(403, "Access denied.")
-            cur.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
-            cur.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+            cur.execute("DELETE FROM chatbot_chat_messages WHERE session_id = %s", (session_id,))
+            cur.execute("DELETE FROM chatbot_chat_sessions WHERE id = %s", (session_id,))
             conn.commit()
         return {"success": True}
     except HTTPException:
@@ -2792,17 +2703,17 @@ def delete_chat_session(session_id: str, user_id: Optional[str] = None):
         raise HTTPException(400, str(e))
 
 def _save_chat_message(session_id: str, role: str, content: str):
-    """Helper: Save a single message to chat_messages and update session updated_at."""
+    """Helper: Save a single message to chatbot_chat_messages and update session updated_at."""
     try:
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO chat_messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                "INSERT INTO chatbot_chat_messages (session_id, role, content, timestamp) VALUES (%s, %s, %s, %s)",
                 (session_id, role, content, now)
             )
             cur.execute(
-                "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+                "UPDATE chatbot_chat_sessions SET updated_at = %s WHERE id = %s",
                 (now, session_id)
             )
             conn.commit()
@@ -2812,10 +2723,10 @@ def _save_chat_message(session_id: str, role: str, content: str):
 def _get_recent_history(session_id: str, limit: int = 10):
     """Helper: Fetch the last N messages for a session to use as LLM context."""
     try:
-        with db_context() as conn:
-            cur = conn.cursor()
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
             cur.execute(
-                "SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                "SELECT role, content FROM chatbot_chat_messages WHERE session_id = %s ORDER BY id DESC LIMIT %s",
                 (session_id, limit)
             )
             rows = cur.fetchall()
@@ -2829,10 +2740,10 @@ def _update_session_title(session_id: str, first_message: str):
     """Set the session title from the first user message (truncated to 60 chars)."""
     try:
         title = first_message.strip()[:60] or "New Chat"
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
             cur.execute(
-                "UPDATE chat_sessions SET title = ? WHERE id = ? AND title = 'New Chat'",
+                "UPDATE chatbot_chat_sessions SET title = %s WHERE id = %s AND title = 'New Chat'",
                 (title, session_id)
             )
             conn.commit()
@@ -2846,13 +2757,74 @@ class SuggestionRequest(BaseModel):
 
 @app.post("/api/smart-suggestions")
 def get_ai_suggestions(req: SuggestionRequest):
+    """
+    Database-driven autocomplete for the chatbot input box.
+    Queries real city and category names from MySQL instead of using an LLM.
+    """
+    text = (req.text or "").strip().lower()
+    if not text or text == "[empty]":
+        # Return common starter suggestions from top cities and categories
+        try:
+            with mysql_ctx() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT city_name FROM Top_cities_rank ORDER BY city_rank ASC LIMIT 3")
+                cities = [r[0] for r in cur.fetchall() if r[0]]
+                cur.execute("SELECT category_name FROM Top_categories_rank ORDER BY category_rank ASC LIMIT 3")
+                cats = [r[0] for r in cur.fetchall() if r[0]]
+            starters = [f"Best restaurants in {c}" for c in cities[:2]]
+            starters += [f"Top {cat}s" for cat in cats[:2]]
+            starters.append("Hospitals near me")
+            return {"suggestions": starters[:5]}
+        except Exception:
+            return {"suggestions": ["Restaurants", "Hospitals", "Gyms", "Cafes", "Hotels"]}
+
+    suggestions = []
     try:
-        from llm_client import get_smart_suggestions
-        suggs = get_smart_suggestions(req.text, req.language, req.flow)
-        return {"suggestions": suggs}
+        with mysql_ctx() as conn:
+            cur = conn.cursor()
+            # Match cities
+            cur.execute(
+                "SELECT DISTINCT city FROM master_table "
+                "WHERE LOWER(city) LIKE %s AND city IS NOT NULL AND city != '' LIMIT 3",
+                (f"%{text}%",)
+            )
+            matched_cities = [r[0].title() for r in cur.fetchall() if r[0]]
+            for c in matched_cities:
+                suggestions.append(f"Businesses in {c}")
+
+            # Match categories
+            cur.execute(
+                "SELECT DISTINCT business_category FROM master_table "
+                "WHERE LOWER(business_category) LIKE %s "
+                "AND business_category IS NOT NULL AND business_category != '' LIMIT 3",
+                (f"%{text}%",)
+            )
+            matched_cats = [r[0] for r in cur.fetchall() if r[0]]
+            for cat in matched_cats:
+                suggestions.append(f"Top {cat}s")
+
+            # Match business names
+            cur.execute(
+                "SELECT DISTINCT business_name FROM master_table "
+                "WHERE LOWER(business_name) LIKE %s "
+                "AND business_name IS NOT NULL AND business_name != '' LIMIT 2",
+                (f"%{text}%",)
+            )
+            matched_names = [r[0] for r in cur.fetchall() if r[0]]
+            suggestions.extend(matched_names)
+
     except Exception as e:
-        print(f"Server Suggestion Error: {e}")
-        return {"suggestions": []}
+        print(f"[SMART SUGGESTIONS] DB error: {e}")
+
+    # Deduplicate and limit
+    seen = set()
+    unique = []
+    for s in suggestions:
+        if s.lower() not in seen:
+            seen.add(s.lower())
+            unique.append(s)
+
+    return {"suggestions": unique[:5]}
 
 
 # ── BOOKMARKS / FAVORITES ENDPOINTS ───────────────────────────────────
@@ -2864,13 +2836,12 @@ class BookmarkRequest(BaseModel):
 @app.post("/api/bookmarks")
 def add_bookmark(req: BookmarkRequest):
     try:
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
-            # Check duplicate
-            cur.execute("SELECT id FROM bookmarks WHERE user_id = ? AND business_id = ?", (req.user_id, req.business_id))
+            cur.execute("SELECT id FROM chatbot_bookmarks WHERE user_id = %s AND business_id = %s", (req.user_id, req.business_id))
             if cur.fetchone():
                 return {"success": True, "message": "Already bookmarked"}
-            cur.execute("INSERT INTO bookmarks (user_id, business_id) VALUES (?, ?)", (req.user_id, req.business_id))
+            cur.execute("INSERT INTO chatbot_bookmarks (user_id, business_id) VALUES (%s, %s)", (req.user_id, req.business_id))
             conn.commit()
         return {"success": True, "message": "Bookmarked successfully"}
     except Exception as e:
@@ -2879,18 +2850,16 @@ def add_bookmark(req: BookmarkRequest):
 @app.get("/api/bookmarks")
 def list_bookmarks(user_id: str):
     try:
-        # Get bookmark IDs from SQLite
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT business_id FROM bookmarks WHERE user_id = ? ORDER BY id DESC", (user_id,))
+            cur.execute("SELECT business_id FROM chatbot_bookmarks WHERE user_id = %s ORDER BY id DESC", (user_id,))
             biz_ids = [r[0] for r in cur.fetchall()]
         if not biz_ids:
             return []
-        # Fetch business details from MySQL
         placeholders = ",".join("%s" for _ in biz_ids)
         with mysql_ctx() as myconn:
             mycur = myconn.cursor(dictionary=True)
-            mycur.execute(f"SELECT * FROM master_table WHERE id IN ({placeholders})", tuple(biz_ids))
+            mycur.execute(f"SELECT * FROM master_table WHERE global_business_id IN ({placeholders})", tuple(biz_ids))
             rows = mycur.fetchall()
         return map_business_fields(rows)
     except Exception as e:
@@ -2899,9 +2868,9 @@ def list_bookmarks(user_id: str):
 @app.delete("/api/bookmarks/{business_id}")
 def remove_bookmark(business_id: int, user_id: str):
     try:
-        with db_context() as conn:
+        with mysql_ctx() as conn:
             cur = conn.cursor()
-            cur.execute("DELETE FROM bookmarks WHERE user_id = ? AND business_id = ?", (user_id, business_id))
+            cur.execute("DELETE FROM chatbot_bookmarks WHERE user_id = %s AND business_id = %s", (user_id, business_id))
             conn.commit()
         return {"success": True, "message": "Bookmark removed"}
     except Exception as e:
@@ -2922,7 +2891,245 @@ def compare_businesses(req: CompareRequest):
             cur = conn.cursor(dictionary=True)
             cur.execute(f"""
                 SELECT * FROM master_table 
-                WHERE id IN ({placeholders})
+                WHERE global_business_id IN ({placeholders})
+            """, tuple(req.business_ids))
+            rows = cur.fetchall()
+            for r in rows:
+                r["products"] = []
+                r["deals"] = []
+        return map_business_fields(rows)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+# ── REVIEWS & RATINGS ENDPOINTS ───────────────────────────────────────
+
+class ReviewAddRequest(BaseModel):
+    business_id: int
+    user_id: str
+    rating: int
+    comment: str = ""
+
+class ReviewUpdateRequest(BaseModel):
+    user_id: str
+    rating: int
+    comment: str = ""
+
+class MerchantReplyRequest(BaseModel):
+    reply: str
+
+@app.get("/api/reviews/{business_id}")
+def get_reviews(business_id: int, sort_by: str = "newest", offset: int = 0, limit: int = 5):
+    try:
+        sort_clause = "created_at DESC"
+        if sort_by == "highest":
+            sort_clause = "rating DESC, created_at DESC"
+        elif sort_by == "lowest":
+            sort_clause = "rating ASC, created_at DESC"
+        elif sort_by == "helpful":
+            sort_clause = "helpful_votes DESC, created_at DESC"
+
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(f"""
+                SELECT * FROM chatbot_reviews 
+                WHERE business_id = %s 
+                ORDER BY {sort_clause}
+                LIMIT %s OFFSET %s
+            """, (business_id, limit, offset))
+            rows = cur.fetchall()
+            for r in rows:
+                if r.get("created_at"):
+                    r["created_at"] = str(r["created_at"])
+
+            cur.execute("SELECT COUNT(*) as cnt FROM chatbot_reviews WHERE business_id = %s", (business_id,))
+            total_count = cur.fetchone()["cnt"] or 0
+
+        return {"reviews": rows, "total": total_count}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/reviews")
+def add_review(req: ReviewAddRequest):
+    try:
+        if req.rating < 1 or req.rating > 5:
+            raise HTTPException(400, "Rating must be between 1 and 5")
+
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT id FROM chatbot_reviews WHERE business_id = %s AND user_id = %s", (req.business_id, req.user_id))
+            if cur.fetchone():
+                raise HTTPException(400, "You have already submitted a review for this business. You can edit your existing review.")
+
+            cur.execute("""
+                INSERT INTO chatbot_reviews (business_id, user_id, rating, comment)
+                VALUES (%s, %s, %s, %s)
+            """, (req.business_id, req.user_id, req.rating, req.comment))
+
+            cur.execute("SELECT COUNT(*) as cnt, AVG(rating) as avg FROM chatbot_reviews WHERE business_id = %s", (req.business_id,))
+            row = cur.fetchone()
+            count = row["cnt"] or 0
+            avg_rating = round(float(row["avg"] or 0.0), 1)
+            conn.commit()
+
+        return {"success": True, "message": "Review added", "reviews_count": count, "ratings": avg_rating}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+@app.put("/api/reviews/{review_id}")
+def edit_review(review_id: int, req: ReviewUpdateRequest):
+    try:
+        if req.rating < 1 or req.rating > 5:
+            raise HTTPException(400, "Rating must be between 1 and 5")
+
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT business_id, user_id FROM chatbot_reviews WHERE id = %s", (review_id,))
+            review = cur.fetchone()
+            if not review:
+                raise HTTPException(404, "Review not found")
+            if review["user_id"] != req.user_id:
+                raise HTTPException(403, "Not authorized to edit this review")
+
+            biz_id = review["business_id"]
+            cur.execute("""
+                UPDATE chatbot_reviews 
+                SET rating = %s, comment = %s 
+                WHERE id = %s
+            """, (req.rating, req.comment, review_id))
+
+            cur.execute("SELECT COUNT(*) as cnt, AVG(rating) as avg FROM chatbot_reviews WHERE business_id = %s", (biz_id,))
+            row = cur.fetchone()
+            count = row["cnt"] or 0
+            avg_rating = round(float(row["avg"] or 0.0), 1)
+            conn.commit()
+
+        return {"success": True, "message": "Review updated", "reviews_count": count, "ratings": avg_rating}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+@app.delete("/api/reviews/{review_id}")
+def delete_review(review_id: int, user_id: str):
+    try:
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT business_id, user_id FROM chatbot_reviews WHERE id = %s", (review_id,))
+            review = cur.fetchone()
+
+            if not review:
+                raise HTTPException(404, "Review not found")
+            if review["user_id"] != user_id:
+                raise HTTPException(403, "Not authorized to delete this review")
+
+            biz_id = review["business_id"]
+            cur.execute("DELETE FROM chatbot_reviews WHERE id = %s", (review_id,))
+
+            cur.execute("SELECT COUNT(*) as cnt, AVG(rating) as avg FROM chatbot_reviews WHERE business_id = %s", (biz_id,))
+            row = cur.fetchone()
+            count = row["cnt"] or 0
+            avg_rating = round(float(row["avg"] or 0.0), 1)
+            conn.commit()
+
+        return {"success": True, "message": "Review deleted", "reviews_count": count, "ratings": avg_rating}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/reviews/{review_id}/reply")
+def merchant_reply(review_id: int, req: MerchantReplyRequest, payload: dict = Depends(get_authenticated_user)):
+    user_id = payload.get("id")
+    try:
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            # Check review exists and get business
+            cur.execute("SELECT business_id FROM chatbot_reviews WHERE id = %s", (review_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "Review not found")
+            cur.execute("UPDATE chatbot_reviews SET merchant_reply = %s WHERE id = %s", (req.reply, review_id))
+            conn.commit()
+        return {"success": True, "message": "Reply posted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/reviews/{review_id}/helpful")
+def helpful_vote(review_id: int):
+    try:
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("UPDATE chatbot_reviews SET helpful_votes = helpful_votes + 1 WHERE id = %s", (review_id,))
+            conn.commit()
+            cur.execute("SELECT helpful_votes FROM chatbot_reviews WHERE id = %s", (review_id,))
+            row = cur.fetchone()
+            votes = row["helpful_votes"] if row else 0
+        return {"success": True, "helpful_votes": votes}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+class PhotoAddRequest(BaseModel):
+    photo_url: str
+
+@app.get("/api/business/{business_id}/photos")
+def get_business_photos(business_id: int):
+    try:
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT * FROM chatbot_business_photos WHERE business_id = %s ORDER BY created_at DESC", (business_id,))
+            rows = cur.fetchall()
+            for r in rows:
+                if r.get("created_at"):
+                    r["created_at"] = str(r["created_at"])
+        return rows
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/business/{business_id}/photos")
+def add_business_photo(business_id: int, req: PhotoAddRequest, payload: dict = Depends(get_authenticated_user)):
+    try:
+        with mysql_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO chatbot_business_photos (business_id, photo_url) VALUES (%s, %s)", (business_id, req.photo_url))
+            conn.commit()
+        return {"success": True, "message": "Photo added successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+@app.delete("/api/photos/{photo_id}")
+def delete_business_photo(photo_id: int, payload: dict = Depends(get_authenticated_user)):
+    try:
+        with mysql_ctx() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM chatbot_business_photos WHERE id = %s", (photo_id,))
+            conn.commit()
+        return {"success": True, "message": "Photo deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+# ── COMPARE BUSINESSES ENDPOINT ───────────────────────────────────────
+
+class CompareRequest(BaseModel):
+    business_ids: List[int]
+
+@app.post("/api/business/compare")
+def compare_businesses(req: CompareRequest):
+    try:
+        if not req.business_ids:
+            return []
+        placeholders = ",".join("%s" for _ in req.business_ids)
+        with mysql_ctx() as conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(f"""
+                SELECT * FROM master_table 
+                WHERE global_business_id IN ({placeholders})
             """, tuple(req.business_ids))
             rows = cur.fetchall()
             
@@ -2965,14 +3172,14 @@ def get_reviews(business_id: int, sort_by: str = "newest", offset: int = 0, limi
         with db_context() as conn:
             cur = conn.cursor()
             cur.execute(f"""
-                SELECT * FROM reviews 
+                SELECT * FROM chatbot_reviews 
                 WHERE business_id = ? 
                 ORDER BY {sort_clause}
                 LIMIT ? OFFSET ?
             """, (business_id, limit, offset))
             rows = [dict(r) for r in cur.fetchall()]
             
-            cur.execute("SELECT COUNT(*) FROM reviews WHERE business_id = ?", (business_id,))
+            cur.execute("SELECT COUNT(*) FROM chatbot_reviews WHERE business_id = ?", (business_id,))
             total_count = cur.fetchone()[0] or 0
             
         return {"reviews": rows, "total": total_count}
@@ -2989,17 +3196,17 @@ def add_review(req: ReviewAddRequest):
             cur = conn.cursor()
             
             # Check duplicate review
-            cur.execute("SELECT id FROM reviews WHERE business_id = ? AND user_id = ?", (req.business_id, req.user_id))
+            cur.execute("SELECT id FROM chatbot_reviews WHERE business_id = ? AND user_id = ?", (req.business_id, req.user_id))
             if cur.fetchone():
                 raise HTTPException(400, "You have already submitted a review for this business. You can edit your existing review.")
             
             cur.execute("""
-                INSERT INTO reviews (business_id, user_id, rating, comment)
+                INSERT INTO chatbot_reviews (business_id, user_id, rating, comment)
                 VALUES (?, ?, ?, ?)
             """, (req.business_id, req.user_id, req.rating, req.comment))
             
             cur.execute("""
-                SELECT COUNT(*), AVG(rating) FROM reviews WHERE business_id = ?
+                SELECT COUNT(*), AVG(rating) FROM chatbot_reviews WHERE business_id = ?
             """, (req.business_id,))
             row = cur.fetchone()
             count = row[0] or 0
@@ -3027,7 +3234,7 @@ def edit_review(review_id: int, req: ReviewUpdateRequest):
             
         with db_context() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT business_id, user_id FROM reviews WHERE id = ?", (review_id,))
+            cur.execute("SELECT business_id, user_id FROM chatbot_reviews WHERE id = ?", (review_id,))
             review = cur.fetchone()
             if not review:
                 raise HTTPException(404, "Review not found")
@@ -3036,12 +3243,12 @@ def edit_review(review_id: int, req: ReviewUpdateRequest):
                 
             biz_id = review["business_id"]
             cur.execute("""
-                UPDATE reviews 
+                UPDATE chatbot_reviews 
                 SET rating = ?, comment = ? 
                 WHERE id = ?
             """, (req.rating, req.comment, review_id))
             
-            cur.execute("SELECT COUNT(*), AVG(rating) FROM reviews WHERE business_id = ?", (biz_id,))
+            cur.execute("SELECT COUNT(*), AVG(rating) FROM chatbot_reviews WHERE business_id = ?", (biz_id,))
             row = cur.fetchone()
             count = row[0] or 0
             avg_rating = round(row[1] or 0.0, 1)
@@ -3064,7 +3271,7 @@ def delete_review(review_id: int, user_id: str):
     try:
         with db_context() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT business_id, user_id FROM reviews WHERE id = ?", (review_id,))
+            cur.execute("SELECT business_id, user_id FROM chatbot_reviews WHERE id = ?", (review_id,))
             review = cur.fetchone()
             
             if not review:
@@ -3074,10 +3281,10 @@ def delete_review(review_id: int, user_id: str):
                 raise HTTPException(403, "Not authorized to delete this review")
                 
             biz_id = review["business_id"]
-            cur.execute("DELETE FROM reviews WHERE id = ?", (review_id,))
+            cur.execute("DELETE FROM chatbot_reviews WHERE id = ?", (review_id,))
             
             cur.execute("""
-                SELECT COUNT(*), AVG(rating) FROM reviews WHERE business_id = ?
+                SELECT COUNT(*), AVG(rating) FROM chatbot_reviews WHERE business_id = ?
             """, (biz_id,))
             row = cur.fetchone()
             count = row[0] or 0
@@ -3103,7 +3310,7 @@ def merchant_reply(review_id: int, req: MerchantReplyRequest, payload: dict = De
             cur = conn.cursor()
             cur.execute("""
                 SELECT r.business_id, b.owner_id 
-                FROM reviews r
+                FROM chatbot_reviews r
                 JOIN g_map_master_table b ON r.business_id = b.global_business_id
                 WHERE r.id = ?
             """, (review_id,))
@@ -3113,7 +3320,7 @@ def merchant_reply(review_id: int, req: MerchantReplyRequest, payload: dict = De
             if row["owner_id"] != user_id:
                 raise HTTPException(403, "Only the business owner can reply to this review")
                 
-            cur.execute("UPDATE reviews SET merchant_reply = ? WHERE id = ?", (req.reply, review_id))
+            cur.execute("UPDATE chatbot_reviews SET merchant_reply = ? WHERE id = ?", (req.reply, review_id))
             conn.commit()
         return {"success": True, "message": "Reply posted successfully"}
     except HTTPException:
@@ -3126,10 +3333,10 @@ def helpful_vote(review_id: int):
     try:
         with db_context() as conn:
             cur = conn.cursor()
-            cur.execute("UPDATE reviews SET helpful_votes = helpful_votes + 1 WHERE id = ?", (review_id,))
+            cur.execute("UPDATE chatbot_reviews SET helpful_votes = helpful_votes + 1 WHERE id = ?", (review_id,))
             conn.commit()
             
-            cur.execute("SELECT helpful_votes FROM reviews WHERE id = ?", (review_id,))
+            cur.execute("SELECT helpful_votes FROM chatbot_reviews WHERE id = ?", (review_id,))
             row = cur.fetchone()
             votes = row[0] if row else 0
         return {"success": True, "helpful_votes": votes}
@@ -3144,7 +3351,7 @@ def get_business_photos(business_id: int):
     try:
         with db_context() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM business_photos WHERE business_id = ? ORDER BY created_at DESC", (business_id,))
+            cur.execute("SELECT * FROM chatbot_business_photos WHERE business_id = ? ORDER BY created_at DESC", (business_id,))
             rows = [dict(r) for r in cur.fetchall()]
         return rows
     except Exception as e:
@@ -3164,7 +3371,7 @@ def add_business_photo(business_id: int, req: PhotoAddRequest, payload: dict = D
                 raise HTTPException(403, "Not authorized to upload photos for this business")
                 
             cur.execute("""
-                INSERT INTO business_photos (business_id, photo_url)
+                INSERT INTO chatbot_business_photos (business_id, photo_url)
                 VALUES (?, ?)
             """, (business_id, req.photo_url))
             conn.commit()
@@ -3182,7 +3389,7 @@ def delete_business_photo(photo_id: int, payload: dict = Depends(get_authenticat
             cur = conn.cursor()
             cur.execute("""
                 SELECT p.business_id, b.owner_id 
-                FROM business_photos p
+                FROM chatbot_business_photos p
                 JOIN g_map_master_table b ON p.business_id = b.global_business_id
                 WHERE p.id = ?
             """, (photo_id,))
@@ -3192,7 +3399,7 @@ def delete_business_photo(photo_id: int, payload: dict = Depends(get_authenticat
             if row["owner_id"] != user_id:
                 raise HTTPException(403, "Not authorized to delete this photo")
                 
-            cur.execute("DELETE FROM business_photos WHERE id = ?", (photo_id,))
+            cur.execute("DELETE FROM chatbot_business_photos WHERE id = ?", (photo_id,))
             conn.commit()
         return {"success": True, "message": "Photo deleted successfully"}
     except HTTPException:

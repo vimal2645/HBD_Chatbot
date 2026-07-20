@@ -3,7 +3,7 @@
 import re
 from mysql_pool import mysql_ctx
 
-BIZ_TABLE = "master_table"
+BIZ_TABLE = "chatbot_add_business"
 
 def normalize_phone(phone: str) -> str:
     p = re.sub(r'\D', '', phone)
@@ -21,7 +21,7 @@ def row_to_dict(row_dict):
         "business_name": row_dict.get("business_name"),
         "name": row_dict.get("business_name"),
         "address": row_dict.get("address"),
-        "phone_number": row_dict.get("primary_phone"),
+        "phone_number": row_dict.get("phone_number") or row_dict.get("primary_phone"),
         "primary_phone": row_dict.get("primary_phone"),
         "ratings": row_dict.get("ratings") or row_dict.get("stars") or 0,
         "reviews_average": row_dict.get("ratings") or row_dict.get("stars") or 0,
@@ -80,8 +80,9 @@ def get_businesses_by_email(email: str):
             """,
             (email,)
         )
-        row = cursor.fetchall()
+        rows = cursor.fetchall()
+        converted = [row_to_dict(r) for r in rows]
         if rows:
-            return [row_to_dict(r) for r in rows]
+            return converted
 
         raise ValueError("Email not registered")

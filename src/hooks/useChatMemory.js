@@ -19,7 +19,16 @@ export function useChatMemory({ session, toast }) {
 
   // Active chat messages list (shared globally across Sidebar, Pages, and Widgets)
   const [localMessages, setLocalMessages] = useState([
-    { id: 'init', role: 'bot', type: 'text', content: 'Hi 👋 How can I help you today? You can search for local businesses or manage your listing.' }
+    {
+      id: 'init',
+      role: 'bot',
+      type: 'explore_welcome',
+      content: UI_TRANSLATIONS.en.welcome,
+      suggestions: [
+        { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
+        { title: '🛍️ Products', action: 'query_rewrite', query: 'explore products' }
+      ]
+    }
   ]);
   
   const [currentLanguage, setCurrentLanguage] = useState('en');
@@ -101,8 +110,16 @@ export function useChatMemory({ session, toast }) {
     const trans = UI_TRANSLATIONS[currentLanguage] || UI_TRANSLATIONS.en;
     const hint = trans.menu_hint || "💡 Note: Click the three-dot (⋮) menu at the top-right for more options.";
     setLocalMessages([
-      { id: 'init', role: 'bot', type: 'text', content: trans.welcome || trans.welcome_message },
-      { id: 'hint', role: 'bot', type: 'text', content: hint }
+      {
+        id: 'init',
+        role: 'bot',
+        type: 'explore_welcome',
+        content: trans.welcome || trans.welcome_message,
+        suggestions: [
+          { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
+          { title: '🛍\uFE0F Products', action: 'query_rewrite', query: 'explore products' }
+        ]
+      }
     ]);
     
     if (userId) {

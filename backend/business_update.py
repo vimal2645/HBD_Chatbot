@@ -1,10 +1,10 @@
 # business_update.py - Updated to use correct g_map_master_table
 
-import sqlite3
+from mysql_pool import mysql_ctx
 import os
 import csv
 
-BIZ_TABLE = "g_map_master_table"
+BIZ_TABLE = "chatbot_add_business"
 
 # Map old field names to new column names
 FIELD_MAP = {
@@ -35,43 +35,41 @@ def update_business(business_id: int, updates: dict):
     if not mapped_updates:
         return False
 
-    fields = [f"{col} = ?" for col in mapped_updates.keys()]
+    fields = [f"{col} = %s" for col in mapped_updates.keys()]
     values = list(mapped_updates.values())
     values.append(business_id)
 
     query = f"""
         UPDATE {BIZ_TABLE}
         SET {', '.join(fields)}
-        WHERE global_business_id = ?
+        WHERE global_business_id = %s
     """
 
     DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "google_map_data.db")
     CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "g_map_master_table_sample.csv")
     
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(query, values)
-    conn.commit()
+    with mysql_ctx() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, values)
+        conn.commit()
+        # Also log the update in update_history
+        for field, value in mapped_updates.items():
+            try:
+                cursor.execute("SELECT " + field + f" FROM {BIZ_TABLE} WHERE global_business_id = %s", (business_id,))
+                old_row = cursor.fetchone()
+                old_val = old_row[0] if old_row else ""
+            except:
+                old_val = ""
+            try:
+                cursor.execute(
+                    "INSERT INTO update_history (business_id, field_name, old_value, new_value) VALUES (%s, %s, %s, %s)",
+                    (business_id, field, str(old_val), str(value))
+                )
+                print("Rows updated:", cursor.rowcount)
+            except Exception as e:
+                print(f"History log error: {e}")
     
-    # Also log the update in update_history
-    for field, value in mapped_updates.items():
-        try:
-            cursor.execute("SELECT " + field + f" FROM {BIZ_TABLE} WHERE global_business_id = ?", (business_id,))
-            old_row = cursor.fetchone()
-            old_val = old_row[0] if old_row else ""
-        except:
-            old_val = ""
-        try:
-            cursor.execute(
-                "INSERT INTO update_history (business_id, field_name, old_value, new_value) VALUES (?, ?, ?, ?)",
-                (business_id, field, str(old_val), str(value))
-            )
-            print("Rows updated:", cursor.rowcount)
-        except Exception as e:
-            print(f"History log error: {e}")
-    
-    conn.commit()
-    conn.close()
+        conn.commit()
 
     # Sync to CSV
     try:

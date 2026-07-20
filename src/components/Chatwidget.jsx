@@ -23,7 +23,16 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
   const [showLoginPopup, setShowLoginPopup] = useState(false)
 
   const [localMessages, setLocalMessages] = useState([
-    { id: 'init', role: 'bot', type: 'text', content: UI_TRANSLATIONS.en.welcome }
+    {
+      id: 'init',
+      role: 'bot',
+      type: 'explore_welcome',
+      content: UI_TRANSLATIONS.en.welcome,
+      suggestions: [
+        { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
+        { title: '🛍️ Products', action: 'query_rewrite', query: 'explore products' }
+      ]
+    }
   ])
   const messagesEndRef = useRef(null)
 
@@ -71,8 +80,16 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
 
     if (localMessages.length <= 2 && localMessages.every(m => m.id === 'init' || m.id === 'hint')) {
       setLocalMessages([
-        { id: 'init', role: 'bot', type: 'text', content: trans.welcome || trans.welcome_message },
-        { id: 'hint', role: 'bot', type: 'text', content: hint }
+        {
+          id: 'init',
+          role: 'bot',
+          type: 'explore_welcome',
+          content: trans.welcome || trans.welcome_message,
+          suggestions: [
+            { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
+            { title: '🛍\uFE0F Products', action: 'query_rewrite', query: 'explore products' }
+          ]
+        }
       ])
     }
   }, [currentLanguage])
@@ -182,7 +199,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
   const handleLogout = () => {
     const lang = currentLanguage || 'en'
     const trans = UI_TRANSLATIONS[lang] || UI_TRANSLATIONS.en
-    
+
     setIsLoggedIn(false)
     setSession({ type: 'GUEST', phone: null, businessId: null })
     setCurrentSessionId(null)
@@ -191,7 +208,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
     setFlowMode('QUERY')
     setWizardStep(0)
     setWizardData({})
-    
+
     setLocalMessages([
       { id: 'init', role: 'bot', type: 'text', content: trans.welcome || trans.welcome_message },
       { id: 'hint', role: 'bot', type: 'text', content: trans.menu_hint || "💡 Note: Click the three-dot (⋮) menu at the top-right for more options." }
@@ -204,13 +221,13 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
       if (res.status === 'error') {
         throw new Error(res.message);
       }
-      
+
       setShowLoginPopup(false)
       const trans = UI_TRANSLATIONS[currentLanguage || 'en'] || UI_TRANSLATIONS.en;
       if (res.status === 'logged_in' && res.businesses?.length) {
         const biz = res.businesses[0]
-        const sessionData = { 
-          type: 'BUSINESS', 
+        const sessionData = {
+          type: 'BUSINESS',
           businessId: biz.global_business_id,
           businessName: biz.business_name,
           city: biz.city
@@ -220,7 +237,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
           sessionData.email = identifier;
           if (biz.phone_number) sessionData.phone = biz.phone_number;
         }
-        
+
         setSession(sessionData)
         setIsLoggedIn(true)
         setQuickActionsView('main')
@@ -233,20 +250,20 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
           if (sRes.success) setCurrentSessionId(sRes.session_id)
           const list = await api.listChatSessions(userId)
           setChatList(Array.isArray(list) ? list : [])
-        } catch(err) { console.error('Chat session init error:', err) }
+        } catch (err) { console.error('Chat session init error:', err) }
       } else {
         const sessionData = { type: 'REGISTERED' }
         if (method === 'phone') sessionData.phone = identifier;
         else sessionData.email = identifier;
-        
+
         setSession(sessionData)
         setIsLoggedIn(true)
         setQuickActionsView('no_business')
         const welcomeMsg = trans.welcome;
         const menuHint = trans.menu_hint || "💡 Note: Click the three-dot (⋮) menu at the top-right for more actions.";
-        
+
         setLocalMessages(prev => [
-          ...prev, 
+          ...prev,
           { id: Date.now(), role: 'bot', type: 'text', content: welcomeMsg },
           { id: Date.now() + 1, role: 'bot', type: 'text', content: menuHint }
         ])
@@ -256,7 +273,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
           if (sRes.success) setCurrentSessionId(sRes.session_id)
           const list = await api.listChatSessions(identifier)
           setChatList(Array.isArray(list) ? list : [])
-        } catch(err) { console.error('Chat session init error:', err) }
+        } catch (err) { console.error('Chat session init error:', err) }
       }
     } catch (e) {
       alert(`Login error: ${e.message}`);
@@ -270,19 +287,19 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
 
     setInputText('')
     setLocalMessages(prev => [...prev, { id: Date.now(), role: 'user', type: 'text', content: text }])
-    
+
     setMsgHistory(prev => {
       if (prev[prev.length - 1] === text) return prev;
       return [...prev, text];
     })
     setHistoryIndex(-1)
-    
+
     addThinking()
 
     try {
       const lang = currentLanguage || 'en';
       const trans = UI_TRANSLATIONS[lang] || UI_TRANSLATIONS.en;
-      
+
       // Delegate to Wizards Hook
       const wasWizardFlow = await wizards.handleWizardSend(text, trans);
       if (wasWizardFlow) {
@@ -295,7 +312,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
         activeSessionId = await startNewSession();
         await loadChatList();
       }
-      
+
       const data = await api.query({
         query: text,
         session,
@@ -303,20 +320,23 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
         session_id: activeSessionId
       })
       removeThinking()
-      
+
       const responseType = data.type || 'text'
       if (responseType === 'command') {
         handleAction(data.command);
         return;
       }
-      
+
       const fallbackResponse = trans.fallback_response || 'I am not sure about that.';
       setLocalMessages(prev => [...prev, {
         id: Date.now(),
         role: 'bot',
         type: responseType,
         content: data.data || data.content || fallbackResponse,
-        intro: data.intro
+        intro: data.intro,
+        suggestions: data.suggestions || [],
+        search_metadata: data.search_metadata || null,
+        context: data.context || null
       }])
 
     } catch (e) {
@@ -324,11 +344,11 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
       const lang = currentLanguage || 'en';
       const trans = UI_TRANSLATIONS[lang] || UI_TRANSLATIONS.en;
       console.error("handleSend Error:", e);
-      setLocalMessages(prev => [...prev, { 
-        id: Date.now(), 
-        role: 'bot', 
-        type: 'text', 
-        content: `⚠️ ${trans.generic_error || 'Something went wrong.'} (${e.message})` 
+      setLocalMessages(prev => [...prev, {
+        id: Date.now(),
+        role: 'bot',
+        type: 'text',
+        content: `⚠️ ${trans.generic_error || 'Something went wrong.'} (${e.message})`
       }])
     }
   }
@@ -381,6 +401,16 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
     if (action === 'close') return onClose()
     if (action === 'login_trigger') return setShowLoginPopup(true)
     if (action === 'cancel_sub_menu') return setQuickActionsView('welcome_screen')
+
+    // ── Suggestion Chip Actions (query_rewrite / pagination) ──────────────────
+    if (action === 'query_rewrite' || action === 'next_option' || action === 'prev_option' || action === 'set_city' || action === 'set_category') {
+      const queryText = typeof payload === 'string' ? payload : (payload?.query || payload);
+      if (!queryText) return;
+      // Show the chip label as a user message
+      await handleSend(null, queryText);
+      return;
+    }
+
 
     if (action === 'search_method') {
       setLocalMessages(prev => [...prev, { id: Date.now(), role: 'user', type: 'text', content: trans.btn_find }])
@@ -443,10 +473,17 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
       }
 
       setShowResetConfirm(false)
-      const hint = trans.menu_hint || "💡 Note: Click the three-dot (⋮) menu at the top-right for more options.";
       setLocalMessages([
-        { id: 'init', role: 'bot', type: 'text', content: trans.chat_cleared || "Chat cleared!" },
-        { id: 'hint', role: 'bot', type: 'text', content: hint }
+        {
+          id: 'init',
+          role: 'bot',
+          type: 'explore_welcome',
+          content: trans.chat_cleared || '👋 Chat cleared. Welcome back!',
+          suggestions: [
+            { title: '🏢 Business Listings', action: 'query_rewrite', query: 'explore business listings' },
+            { title: '🛍️ Products', action: 'query_rewrite', query: 'explore products' }
+          ]
+        }
       ])
       setResetConfirmCount(0)
       setFlowMode('QUERY')
@@ -457,32 +494,33 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
       return
     }
 
+
     if (action !== 'reset_chat') setResetConfirmCount(0)
 
     if (action === 'search') {
       addThinking()
       try {
-        const data = await api.query({ 
-          query: "show my business", 
-          session, 
-          language: lang, 
-          session_id: currentSessionId 
+        const data = await api.query({
+          query: "show my business",
+          session,
+          language: lang,
+          session_id: currentSessionId
         })
         removeThinking()
         if (!data || (!data.type && data.detail)) {
           setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: '❌ Could not load your business. Please try again.' }])
           return
         }
-        setLocalMessages(prev => [...prev, { 
-          id: Date.now(), 
-          role: 'bot', 
-          type: data.type || 'text', 
+        setLocalMessages(prev => [...prev, {
+          id: Date.now(),
+          role: 'bot',
+          type: data.type || 'text',
           content: data.content ?? data.data ?? data.detail ?? 'No data found.',
           intro: data.intro,
           prompt: data.prompt,
           suggestions: data.suggestions
         }])
-      } catch(e) {
+      } catch (e) {
         removeThinking()
         setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: '❌ Error loading business. Please restart the backend and try again.' }])
       }
@@ -490,15 +528,15 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
     if (action === 'update') {
       addThinking()
       try {
-        const data = await api.query({ 
-          query: "update my business", 
-          session, 
-          language: lang, 
-          session_id: currentSessionId 
+        const data = await api.query({
+          query: "update my business",
+          session,
+          language: lang,
+          session_id: currentSessionId
         })
         removeThinking()
-        setLocalMessages(prev => [...prev,{ id: Date.now(), role: 'bot', type: 'suggestions', intro: data.intro, suggestions: data.suggestions || data.content}])
-      } catch(e) { removeThinking() }
+        setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'suggestions', intro: data.intro, suggestions: data.suggestions || data.content }])
+      } catch (e) { removeThinking() }
     }
     if (action === 'update_specific') {
       const field = payload;
@@ -515,70 +553,70 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
     }
     if (action === 'claim_business') {
       const trans = UI_TRANSLATIONS[lang] || UI_TRANSLATIONS.en;
-      const verificationMsg = trans.claim_verification 
-        ? trans.claim_verification.replace('this business', `"${payload.business_name}"`) 
+      const verificationMsg = trans.claim_verification
+        ? trans.claim_verification.replace('this business', `"${payload.business_name}"`)
         : `Great! To manage "${payload.business_name}", we first need to verify your ownership via phone.`;
       setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: verificationMsg }])
       setShowLoginPopup(true)
     }
 
     if (action === 'manage_products') {
-        addThinking();
-        try {
-          const lang2 = currentLanguage || 'en';
-          const data = await api.query({ 
-            query: 'manage product', 
-            session, 
-            language: lang2, 
-            session_id: currentSessionId 
-          })
-          removeThinking();
-          setLocalMessages(prev => [...prev, {
-            id: Date.now(), role: 'bot',
-            type: data.type === 'manage_products' ? 'manage_products' : 'text',
-            content: data.content !== undefined ? data.content : (data.data || (data.type === 'faq' ? data.data : '')),
-            intro: data.intro
-          }])
-          if (data.type === 'faq') {
-            setLocalMessages(prev => { const msgs = [...prev]; msgs[msgs.length-1] = { ...msgs[msgs.length-1], type: 'text', content: data.data || 'No products found.' }; return msgs; })
-          }
-        } catch(e) { removeThinking(); console.error('manage_products error:', e); }
+      addThinking();
+      try {
+        const lang2 = currentLanguage || 'en';
+        const data = await api.query({
+          query: 'manage product',
+          session,
+          language: lang2,
+          session_id: currentSessionId
+        })
+        removeThinking();
+        setLocalMessages(prev => [...prev, {
+          id: Date.now(), role: 'bot',
+          type: data.type === 'manage_products' ? 'manage_products' : 'text',
+          content: data.content !== undefined ? data.content : (data.data || (data.type === 'faq' ? data.data : '')),
+          intro: data.intro
+        }])
+        if (data.type === 'faq') {
+          setLocalMessages(prev => { const msgs = [...prev]; msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], type: 'text', content: data.data || 'No products found.' }; return msgs; })
+        }
+      } catch (e) { removeThinking(); console.error('manage_products error:', e); }
     }
     if (action === 'manage_deals') {
-        addThinking();
-        try {
-          const lang2 = currentLanguage || 'en';
-          const data = await api.query({ 
-            query: 'manage deal', 
-            session, 
-            language: lang2, 
-            session_id: currentSessionId 
-          })
-          removeThinking();
-          setLocalMessages(prev => [...prev, {
-            id: Date.now(), role: 'bot',
-            type: data.type === 'manage_deals' ? 'manage_deals' : 'text',
-            content: data.content !== undefined ? data.content : (data.data || (data.type === 'faq' ? data.data : '')),
-            intro: data.intro
-          }])
-          if (data.type === 'faq') {
-            setLocalMessages(prev => { const msgs = [...prev]; msgs[msgs.length-1] = { ...msgs[msgs.length-1], type: 'text', content: data.data || 'No deals found.' }; return msgs; })
-          }
-        } catch(e) { removeThinking(); console.error('manage_deals error:', e); }
+      addThinking();
+      try {
+        const lang2 = currentLanguage || 'en';
+        const data = await api.query({
+          query: 'manage deal',
+          session,
+          language: lang2,
+          session_id: currentSessionId
+        })
+        removeThinking();
+        setLocalMessages(prev => [...prev, {
+          id: Date.now(), role: 'bot',
+          type: data.type === 'manage_deals' ? 'manage_deals' : 'text',
+          content: data.content !== undefined ? data.content : (data.data || (data.type === 'faq' ? data.data : '')),
+          intro: data.intro
+        }])
+        if (data.type === 'faq') {
+          setLocalMessages(prev => { const msgs = [...prev]; msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], type: 'text', content: data.data || 'No deals found.' }; return msgs; })
+        }
+      } catch (e) { removeThinking(); console.error('manage_deals error:', e); }
     }
     if (action === 'delete_product') {
-        const res = await api.deleteProduct(payload);
-        if (res.success) {
-          setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: "🗑️ Product removed successfully!" }])
-          setTimeout(() => handleAction('manage_products'), 300)
-        }
+      const res = await api.deleteProduct(payload);
+      if (res.success) {
+        setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: "🗑️ Product removed successfully!" }])
+        setTimeout(() => handleAction('manage_products'), 300)
+      }
     }
     if (action === 'delete_deal') {
-        const res = await api.deleteDeal(payload);
-        if (res.success) {
-          setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: "🗑️ Deal removed successfully!" }])
-          setTimeout(() => handleAction('manage_deals'), 300)
-        }
+      const res = await api.deleteDeal(payload);
+      if (res.success) {
+        setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: "🗑️ Deal removed successfully!" }])
+        setTimeout(() => handleAction('manage_deals'), 300)
+      }
     }
   }
 
@@ -636,9 +674,8 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
                   <div
                     key={chat.session_id}
                     onClick={() => loadPastSession(chat.session_id)}
-                    className={`group flex items-center gap-2 px-3 py-2.5 rounded-xl cursor-pointer mb-1 transition-all hover:bg-indigo-50 ${
-                      currentSessionId === chat.session_id ? 'bg-indigo-50 border border-indigo-100' : ''
-                    }`}
+                    className={`group flex items-center gap-2 px-3 py-2.5 rounded-xl cursor-pointer mb-1 transition-all hover:bg-indigo-50 ${currentSessionId === chat.session_id ? 'bg-indigo-50 border border-indigo-100' : ''
+                      }`}
                   >
                     <MessageSquare size={12} className="text-indigo-300 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
@@ -719,8 +756,8 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
             )}
           </div>
           <div className="relative">
-            <button 
-              onClick={() => setIsActionsMenuOpen(!isActionsMenuOpen)} 
+            <button
+              onClick={() => setIsActionsMenuOpen(!isActionsMenuOpen)}
               className={`p-2 hover:bg-gray-100 rounded-lg transition-all duration-200 ${isActionsMenuOpen ? 'text-[#4F46E5] bg-indigo-50 rotate-90' : 'text-gray-400'}`}
             >
               <MoreVertical size={18} />
@@ -729,11 +766,11 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
             {isActionsMenuOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setIsActionsMenuOpen(false)} />
-                <div className="absolute right-0 mt-2 w-56 bg-white rounded-2xl z-50 overflow-hidden" style={{boxShadow: '0 10px 40px rgba(79,70,229,0.15), 0 2px 10px rgba(0,0,0,0.08)'}}>
+                <div className="absolute right-0 mt-2 w-56 bg-white rounded-2xl z-50 overflow-hidden" style={{ boxShadow: '0 10px 40px rgba(79,70,229,0.15), 0 2px 10px rgba(0,0,0,0.08)' }}>
                   <div className="px-4 py-3 bg-gradient-to-r from-[#4F46E5] to-[#7C3AED]">
                     <p className="text-[11px] font-bold text-white/90 tracking-wide">{UI_TRANSLATIONS[currentLanguage || 'en']?.how_continue || "Actions"}</p>
                   </div>
-                  
+
                   <div className="py-1.5">
                     {!isLoggedIn ? (
                       <>
@@ -766,7 +803,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
                         </button>
                       </>
                     )}
-                    
+
                     <button onClick={() => { setIsActionsMenuOpen(false); handleAction('add_new_business') }} className="w-full flex items-center gap-3 px-4 py-2.5 text-xs text-emerald-700 hover:bg-emerald-50/60 transition-all duration-150 group">
                       <span className="w-8 h-8 rounded-xl bg-emerald-50 flex items-center justify-center group-hover:bg-emerald-100 group-hover:scale-110 transition-all duration-200">
                         <Plus size={14} className="text-emerald-600" />
@@ -810,7 +847,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
             <p className="text-[11px] leading-relaxed text-amber-700">
               The backend server appears to be offline. Make sure `START_SERVER.bat` in the backend folder is running and serving on port 5000.
             </p>
-            <button 
+            <button
               onClick={checkHealth}
               className="w-fit text-[10px] font-bold bg-amber-600 text-white px-3 py-1.5 rounded-lg hover:bg-amber-700 transition-all active:scale-95 mt-1"
             >
@@ -861,7 +898,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
             >
               <Plus size={16} /> Choose Image from Device
             </label>
-            <button 
+            <button
               type="button"
               onClick={() => wizards.handleImageSkip()}
               className="text-gray-400 text-[11px] font-bold px-3 py-2 hover:text-gray-600 hover:bg-gray-50 rounded-lg transition-colors capitalize"
@@ -886,8 +923,8 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
               className="flex-1 bg-transparent border-none focus:outline-none text-[13px] text-gray-700 disabled:opacity-50"
               disabled={hasThinking(localMessages)}
             />
-            <button 
-              type="submit" 
+            <button
+              type="submit"
               disabled={!inputText.trim() || hasThinking(localMessages)}
               className="bg-[#4F46E5] text-white p-2 rounded-full px-4 hover:bg-indigo-600 transition-colors disabled:opacity-50 disabled:hover:bg-[#4F46E5]"
             >
@@ -904,7 +941,7 @@ const ChatWidget = ({ onClose, initialQuery, onClearInitialQuery, initialAction,
         <>
           <div className="absolute inset-0 bg-black/30 z-40 rounded-2xl" onClick={() => setShowResetConfirm(false)} />
           <div className="absolute inset-0 flex items-center justify-center z-50 p-6">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[280px] overflow-hidden" style={{boxShadow: '0 20px 60px rgba(0,0,0,0.2)'}}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[280px] overflow-hidden" style={{ boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
               <div className="px-5 pt-5 pb-3 text-center">
                 <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-3">
                   <RefreshCw size={22} className="text-red-500" />

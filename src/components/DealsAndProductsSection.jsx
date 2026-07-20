@@ -10,7 +10,7 @@ const PRESET_PHOTOS = [
   { name: 'Retail Store', url: 'https://images.unsplash.com/photo-1441986300917-64674bd600d8?w=600&auto=format&fit=crop' },
 ];
 
-export default function DealsAndProductsSection({ businessId, isLoggedIn, session }) {
+export default function DealsAndProductsSection({ businessId, ownerId, isLoggedIn, session }) {
   const [activeTab, setActiveTab] = useState('products'); // 'products', 'deals', or 'photos'
   const [products, setProducts] = useState([]);
   const [deals, setDeals] = useState([]);
@@ -22,7 +22,7 @@ export default function DealsAndProductsSection({ businessId, isLoggedIn, sessio
   const [newPhotoUrl, setNewPhotoUrl] = useState('');
   const [submittingPhoto, setSubmittingPhoto] = useState(false);
 
-  const isOwner = isLoggedIn && Number(session?.Id) === Number(ownerId);
+  const isOwner = isLoggedIn && Number(session?.id) === Number(ownerId);
 
   useEffect(() => {
     fetchData();
