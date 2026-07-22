@@ -66,6 +66,7 @@ const ChatArea = (props) => {
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef(null);
   const [selectedBusiness, setSelectedBusiness] = useState(null);
+  const [pendingAuthAction, setPendingAuthAction] = useState(null);
   const [otpResent, setOtpResent] = useState(false);
 
   const messagesEndRef = useRef(null);
@@ -88,6 +89,7 @@ const ChatArea = (props) => {
     wizardData, setWizardData,
     pendingUpdateField, setPendingUpdateField,
     selectedBusiness,
+    pendingAuthAction, setPendingAuthAction,
   });
 
   // ── SCROLL TO BOTTOM ─────────────────────────────────
@@ -494,6 +496,7 @@ const ChatArea = (props) => {
       if (wasWizardFlow) {
         clearInterval(statusInterval);
         setThinkingStatus('');
+        removeThinking();
         return;
       }
 
@@ -685,6 +688,21 @@ const ChatArea = (props) => {
       return;
     }
 
+    if (action === "retry_auth_email") {
+      setFlowMode("AUTH_EMAIL");
+      setLocalMessages(prev => [
+          ...prev,
+            {
+              id: Date.now(),
+              role: "bot",
+              type: "text",
+              content: "Please enter your registered email address."
+            }
+          ]);
+
+      return;
+    }
+
     if (action === 'change_email') {
       setWizardData(prev => ({ ...prev, email: '' }));
       setWizardStep(1);
@@ -804,6 +822,12 @@ const ChatArea = (props) => {
     if (action !== 'reset_chat') setResetConfirmCount(0);
 
     if (action === 'search') {
+       if (!session.phone && !session.email) {
+        setPendingAuthAction({ action, payload });
+        setFlowMode('AUTH_EMAIL');
+        setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: 'Please enter your registered email address.' }]);
+        return;
+      }
       setThinkingStatus('Fetching business profile...');
       addThinking();
       try {
@@ -823,6 +847,12 @@ const ChatArea = (props) => {
     }
     if (action === 'update') {
       //Admin dashboard update
+       if (!session.phone && !session.email) {
+        setPendingAuthAction({ action, payload });
+        setFlowMode('AUTH_EMAIL');
+        setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: 'Please enter your registered email address.' }]);
+        return;
+      }
       if (payload) {
         setSelectedBusiness(payload);
         const fields = ["Business Name", "Category", "Phone Number", "Address", "Area", "City", "State", "Website"];

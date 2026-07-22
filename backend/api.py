@@ -650,7 +650,17 @@ def send_otp_email(req: dict):
         }
     type = req.get("type", "login")
     if not email: return {"success": False, "message": "Missing email"}
-    
+
+    if type == "business_login":
+        from business_by_phone import get_businesses_by_email
+        try:
+            businesses = get_businesses_by_email(email)
+        except ValueError:
+            return {
+            "success": False,
+            "no_business": True,
+            "message": "No business is registered with this email. Please make sure you entered the correct email address or add your business first."
+            }
     import random
     import bcrypt
     import time
