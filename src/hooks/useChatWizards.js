@@ -60,7 +60,9 @@ export function useChatWizards({
   setWizardData,
   pendingUpdateField,
   setPendingUpdateField,
-  selectedBusiness
+  selectedBusiness,
+  pendingAuthAction,
+  setPendingAuthAction,
 }) {
   const [wizardStepsList, setWizardStepsList] = useState(ADD_BIZ_STEPS);
 
@@ -254,6 +256,52 @@ export function useChatWizards({
         setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: `❌ ${err.message}` }]);
       }
       setFlowMode('QUERY');
+      return true;
+    }
+
+    if (flowMode === 'AUTH_EMAIL') {
+      const res = await api.sendEmailOtp(text, "business_login");
+      if (!res.success) {
+        if (res.no_business) {
+          setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: res.message }]);
+          setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'suggestions', content: [{ title: 'Re-enter Email', action: 'retry_auth_email'}, {title: 'Add Business', action: 'add_new_business' }] }]);
+          setFlowMode('QUERY');
+          setPendingAuthAction(null);
+          return true;
+        }
+        setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: `❌ ${res.message}` }]);
+        return true;
+      }
+      setWizardData({ email: text });
+      setFlowMode('AUTH_OTP');
+      setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'otp', content: '📩 OTP sent! Please enter the verification code sent to your email.' }]);
+      return true;
+    }
+
+    if (flowMode === 'AUTH_OTP') {
+      if (text.toLowerCase() === 'resend') {
+        await api.sendEmailOtp(wizardData.email, "business_login");
+        setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'otp', content: '📩 Code resent. Please enter the new OTP:' }]);
+        return true;
+      }
+      const res = await api.verifyEmailOtp(wizardData.email, text);
+      if (!res.success) {
+        setLocalMessages(prev => [...prev, { id: Date.now(), role: 'bot', type: 'text', content: '❌ Invalid OTP. Try again.' }]);
+        return true;
+      }
+      setSession(prev => ({ ...prev, email: wizardData.email }));
+      setFlowMode('QUERY');
+      setPendingAuthAction(null);
+      setLocalMessages(prev => [
+        ...prev,
+        {
+          id: Date.now(),
+          role: 'bot',
+          type: 'text',
+          content:
+          '✅ You have been successfully logged in.\n\nYou can now view and update all businesses registered with this email address using the available options below.'
+        }]);
+
       return true;
     }
 
